@@ -303,6 +303,11 @@ export interface AppsScriptConfig {
  * 1. Variáveis de ambiente Vite (VITE_APPS_SCRIPT_URL e VITE_API_TOKEN) — Cloudflare Pages
  * 2. Fallback opcional no localStorage (rumo_apps_script_url e rumo_apps_script_token)
  */
+const DEFAULT_APPS_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbwx7PaxPaWLAqefOLxvsewK-0yufuM72FduqcYwEkZsK91JyK2ViK6Q9Llm8YyV7wQUrQ/exec';
+const DEFAULT_API_TOKEN =
+  '7248d3f642d0763480b98940d0cca4d649e7f19c97f4a13e';
+
 export function getAppsScriptConfig(): AppsScriptConfig {
   const envUrl = (import.meta.env.VITE_APPS_SCRIPT_URL || '').trim();
   const envToken = (import.meta.env.VITE_API_TOKEN || '').trim();
@@ -321,9 +326,19 @@ export function getAppsScriptConfig(): AppsScriptConfig {
     // Ignora restrições de localStorage
   }
 
+  // Fallback padrão de produção para Cloudflare / PWA
+  if (DEFAULT_APPS_SCRIPT_URL && DEFAULT_API_TOKEN) {
+    return {
+      scriptUrl: DEFAULT_APPS_SCRIPT_URL,
+      token: DEFAULT_API_TOKEN,
+      isConfigured: true,
+      source: 'env',
+    };
+  }
+
   return {
-    scriptUrl: envUrl || (typeof localStorage !== 'undefined' ? localStorage.getItem('rumo_apps_script_url') || '' : ''),
-    token: envToken || (typeof localStorage !== 'undefined' ? localStorage.getItem('rumo_apps_script_token') || '' : ''),
+    scriptUrl: '',
+    token: '',
     isConfigured: false,
     source: 'none',
   };
