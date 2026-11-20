@@ -451,7 +451,7 @@ class OfflineSyncManager {
     if (typeof window === 'undefined') return;
     try {
       const all = this.loadAllSnapshots();
-      const cleanList = transactions.filter((tx) => !tx.pendingSync);
+      const cleanList = transactions.filter((tx) => !tx.pendingSync && tx.data.startsWith(ym));
       const updatedAt = meta.updatedAt || new Date().toISOString();
       all[ym] = {
         transactions: cleanList,
@@ -529,7 +529,7 @@ class OfflineSyncManager {
 
     const existingIds = new Set(pendingCreates.map((t) => t.id));
     const filteredBase = baseTransactions.filter(
-      (tx) => !deletedIds.has(tx.id) && !existingIds.has(tx.id)
+      (tx) => !deletedIds.has(tx.id) && !existingIds.has(tx.id) && tx.data.startsWith(ym)
     );
 
     return [...pendingCreates, ...filteredBase].sort((a, b) =>

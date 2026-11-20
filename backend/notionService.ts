@@ -94,10 +94,26 @@ function normalizeDate(dateStr?: string): string {
   if (!dateStr) {
     return new Date().toISOString().slice(0, 16);
   }
-  if (dateStr.length === 10) {
-    return `${dateStr}T12:00`;
+  const clean = dateStr.trim();
+  // Formato brasileiro DD/MM/YYYY ou DD/MM/YYYY HH:mm
+  const brMatch = clean.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[T\s]+(\d{1,2}):(\d{1,2}))?/);
+  if (brMatch) {
+    const day = brMatch[1].padStart(2, '0');
+    const month = brMatch[2].padStart(2, '0');
+    const year = brMatch[3];
+    const hour = brMatch[4] ? brMatch[4].padStart(2, '0') : '12';
+    const min = brMatch[5] ? brMatch[5].padStart(2, '0') : '00';
+    return `${year}-${month}-${day}T${hour}:${min}`;
   }
-  return dateStr.slice(0, 16);
+  // Formato ISO simples YYYY-MM-DD
+  if (clean.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    return `${clean}T12:00`;
+  }
+  // Formato ISO com horário/timezone: YYYY-MM-DDTHH:mm
+  if (/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}/.test(clean)) {
+    return clean.replace(' ', 'T').slice(0, 16);
+  }
+  return clean.slice(0, 16);
 }
 
 /**
@@ -121,9 +137,14 @@ export function parseNotionPageToTransaction(page: any): Transaction {
   const categoria = mapNotionToRumoCategory(notionCategory);
 
   // Data programada ou realizada
+  // Prioriza Data Realizada (data em que o pagamento foi efetivamente liquidado/realizado).
+  // Se ainda não realizado ou sem data realizada, utiliza a Data Programada (previsão/vencimento).
   const dateRaw =
-    props['Data programada ']?.date?.start ||
     props['Data Realizada']?.date?.start ||
+    props['Data realizada']?.date?.start ||
+    props['Data programada ']?.date?.start ||
+    props['Data programada']?.date?.start ||
+    props['Data']?.date?.start ||
     page.created_time;
   const data = normalizeDate(dateRaw);
 
@@ -167,17 +188,18 @@ export async function getNotionTransactions(month?: string): Promise<Transaction
     const endDate = `${nextMonthYear}-${String(nextMonthM).padStart(2, '0')}-01`;
 
     filter = {
-      and: [
+      or: [
         {
-          or: [
-            { property: 'Data programada ', date: { on_or_after: startDate } },
+          and: [
             { property: 'Data Realizada', date: { on_or_after: startDate } },
+            { property: 'Data Realizada', date: { before: endDate } },
           ],
         },
         {
-          or: [
+          and: [
+            { property: 'Data Realizada', date: { is_empty: true } },
+            { property: 'Data programada ', date: { on_or_after: startDate } },
             { property: 'Data programada ', date: { before: endDate } },
-            { property: 'Data Realizada', date: { before: endDate } },
           ],
         },
       ],
@@ -214,7 +236,12 @@ export async function getNotionTransactions(month?: string): Promise<Transaction
         // Ignora entradas para o cálculo de despesas do Rumo
         continue;
       }
-      transactions.push(parseNotionPageToTransaction(page));
+      const tx = parseNotionPageToTransaction(page);
+      // Validação estrita: garante que nenhuma transação fora do mês solicitado vaze
+      if (month && /^\d{4}-\d{2}$/.test(month) && !tx.data.startsWith(month)) {
+        continue;
+      }
+      transactions.push(tx);
     }
 
     hasMore = Boolean(data.has_more);

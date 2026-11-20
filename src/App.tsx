@@ -559,10 +559,19 @@ export default function App() {
     }
   };
 
+  // Transações estritamente pertencentes ao mês selecionado (YYYY-MM)
+  const monthTransactions = useMemo(
+    () =>
+      selectedMonth
+        ? transactions.filter((tx) => tx.data.startsWith(selectedMonth))
+        : transactions,
+    [transactions, selectedMonth]
+  );
+
   // Aggregations
   const totalSpent = useMemo(
-    () => transactions.reduce((sum, item) => sum + item.valor, 0),
-    [transactions]
+    () => monthTransactions.reduce((sum, item) => sum + item.valor, 0),
+    [monthTransactions]
   );
 
   const loadBudgetRecommendation = useCallback(async () => {
@@ -570,7 +579,7 @@ export default function App() {
     try {
       const rec = await fetchBudgetRecommendation({
         currentMonthTotal: totalSpent,
-        currentMonthCount: transactions.length,
+        currentMonthCount: monthTransactions.length,
         getCachedMonth: (ym) => syncManager.getMonthSnapshot(ym)?.transactions ?? null,
       });
       setBudgetRecommendation(rec);
@@ -579,7 +588,7 @@ export default function App() {
     } finally {
       setLoadingRecommendation(false);
     }
-  }, [totalSpent, transactions.length]);
+  }, [totalSpent, monthTransactions.length]);
 
   useEffect(() => {
     if (activeTab === 'configuracao') {
@@ -597,7 +606,7 @@ export default function App() {
     for (const cat of CATEGORIES) {
       totals.set(cat, { total: 0, count: 0 });
     }
-    for (const tx of transactions) {
+    for (const tx of monthTransactions) {
       const prev = totals.get(tx.categoria) ?? { total: 0, count: 0 };
       totals.set(tx.categoria, {
         total: prev.total + tx.valor,
@@ -614,7 +623,7 @@ export default function App() {
         percentage: totalSpent > 0 ? (entry.total / totalSpent) * 100 : 0,
       };
     }).sort((a, b) => b.total - a.total);
-  }, [transactions, totalSpent]);
+  }, [monthTransactions, totalSpent]);
 
   const topCategory = useMemo(() => {
     const first = categorySummaries[0];
@@ -623,7 +632,7 @@ export default function App() {
 
   const filteredTransactions = useMemo(() => {
     const q = normalizeText(searchQuery);
-    return transactions.filter((tx) => {
+    return monthTransactions.filter((tx) => {
       if (selectedCategory !== 'Todas' && tx.categoria !== selectedCategory) {
         return false;
       }
@@ -634,7 +643,7 @@ export default function App() {
       }
       return true;
     });
-  }, [transactions, searchQuery, selectedCategory]);
+  }, [monthTransactions, searchQuery, selectedCategory]);
 
   const handleCreateTransaction = async (payload: CreateTransactionPayload) => {
     const previousTotal = totalSpent;
@@ -734,7 +743,7 @@ export default function App() {
       'rumo-test-push'
     );
 
-  const recentPreview = useMemo(() => transactions.slice(0, 4), [transactions]);
+  const recentPreview = useMemo(() => monthTransactions.slice(0, 4), [monthTransactions]);
 
   const sheetState: SheetConnectionState =
     syncing || syncState.isFlushing
@@ -961,7 +970,7 @@ export default function App() {
                 <SummaryCards
                   animationKey={`${selectedMonth}-${backendStatus.mode}`}
                   totalSpent={totalSpent}
-                  transactionCount={transactions.length}
+                  transactionCount={monthTransactions.length}
                   dailyAverage={dailyAverageInfo.average}
                   dailyAverageLabel={dailyAverageInfo.label}
                   topCategory={topCategory}
@@ -1084,7 +1093,7 @@ export default function App() {
               >
                 <TransactionList
                   transactions={filteredTransactions}
-                  totalMonthTransactions={transactions.length}
+                  totalMonthTransactions={monthTransactions.length}
                   searchQuery={searchQuery}
                   onChangeSearch={setSearchQuery}
                   selectedCategory={selectedCategory}

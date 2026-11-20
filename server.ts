@@ -247,7 +247,14 @@ async function startServer() {
         }
       }
 
-      const data = Array.from(mergedMap.values());
+      let data = Array.from(mergedMap.values());
+      // Filtra estritamente pelo mês solicitado (YYYY-MM), garantindo que nenhuma transação fora do período vaze
+      if (mes && /^\d{4}-\d{2}$/.test(mes)) {
+        data = data.filter((item) => {
+          const itemDate = String(item.data || '').trim();
+          return itemDate.startsWith(mes);
+        });
+      }
       // Ordena por data decrescente
       data.sort((a, b) => String(b.data || '').localeCompare(String(a.data || '')));
 

@@ -12,6 +12,7 @@ import type {
 import {
   formatMonthShortOnly,
   getCurrentYearMonth,
+  normalizeIsoDate,
   shiftYearMonth,
 } from '../utils/format';
 
@@ -387,7 +388,7 @@ function parseRemoteTransaction(raw: Record<string, unknown>, idx: number): Tran
     valor: Number.isFinite(numericValor) ? Math.abs(numericValor) : 0,
     categoria: normalizeCategory(raw.categoria),
     metodo: String(raw.metodo || 'Apple Pay').trim(),
-    data: String(raw.data || '').trim(),
+    data: normalizeIsoDate(raw.data),
   };
 }
 
@@ -439,8 +440,11 @@ export async function fetchTransactions(
         const parsed = (json.data || []).map((item: Record<string, unknown>, i: number) =>
           parseRemoteTransaction(item, i)
         );
+        const filtered = /^\d{4}-\d{2}$/.test(ym)
+          ? parsed.filter((t: Transaction) => t.data.startsWith(ym))
+          : parsed;
         return {
-          transactions: sortDescending(parsed),
+          transactions: sortDescending(filtered),
           status: {
             configured: true,
             connected: true,
@@ -492,9 +496,12 @@ export async function fetchTransactions(
     const parsed = (json?.data || []).map((item, i) =>
       parseRemoteTransaction(item, i)
     );
+    const filtered = /^\d{4}-\d{2}$/.test(ym)
+      ? parsed.filter((t: Transaction) => t.data.startsWith(ym))
+      : parsed;
 
     return {
-      transactions: sortDescending(parsed),
+      transactions: sortDescending(filtered),
       status: {
         configured: true,
         connected: true,

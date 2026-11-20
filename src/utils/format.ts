@@ -100,10 +100,35 @@ export function getNowLocalDateTimeInput(): string {
   return `${y}-${m}-${d}T${h}:${min}`;
 }
 
+export function normalizeIsoDate(raw: unknown): string {
+  const str = String(raw || '').trim();
+  if (!str) return new Date().toISOString().slice(0, 16);
+  // Formato brasileiro DD/MM/YYYY ou DD/MM/YYYY HH:mm
+  const brMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[T\s]+(\d{1,2}):(\d{1,2}))?/);
+  if (brMatch) {
+    const day = brMatch[1].padStart(2, '0');
+    const month = brMatch[2].padStart(2, '0');
+    const year = brMatch[3];
+    const hour = brMatch[4] ? brMatch[4].padStart(2, '0') : '12';
+    const min = brMatch[5] ? brMatch[5].padStart(2, '0') : '00';
+    return `${year}-${month}-${day}T${hour}:${min}`;
+  }
+  // Formato simples YYYY-MM-DD
+  if (str.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return `${str}T12:00`;
+  }
+  // Formato ISO com horário/fuso: YYYY-MM-DDTHH:mm
+  if (/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}/.test(str)) {
+    return str.replace(' ', 'T').slice(0, 16);
+  }
+  return str.slice(0, 16);
+}
+
 export function formatDateTimeShort(isoString: string): string {
   if (!isoString) return '—';
-  // Supports YYYY-MM-DDTHH:mm or YYYY-MM-DD
-  const [datePart, timePart] = isoString.split('T');
+  // Normaliza caso não esteja no padrão ISO
+  const normalized = normalizeIsoDate(isoString);
+  const [datePart, timePart] = normalized.split('T');
   const parts = datePart.split('-');
   if (parts.length !== 3) return isoString;
   const [, month, day] = parts;

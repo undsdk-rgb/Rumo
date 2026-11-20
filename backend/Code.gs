@@ -355,13 +355,30 @@ function jsonResponse_(payload) {
 
 function formatRowDate_(rawDate) {
   if (rawDate instanceof Date) {
-    return Utilities.formatDate(
-      rawDate,
-      Session.getScriptTimeZone(),
-      "yyyy-MM-dd'T'HH:mm"
-    );
+    var tz = Session.getScriptTimeZone();
+    try {
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      if (ss) tz = ss.getSpreadsheetTimeZone() || tz;
+    } catch (e) {}
+    return Utilities.formatDate(rawDate, tz, "yyyy-MM-dd'T'HH:mm");
   }
-  return String(rawDate || '').trim();
+  var str = String(rawDate || '').trim();
+  if (!str) return '';
+  // Formato ISO simples ou com timestamp YYYY-MM-DD...
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    return str.length === 10 ? str + 'T12:00' : str.replace(' ', 'T').slice(0, 16);
+  }
+  // Formato brasileiro DD/MM/YYYY ou DD/MM/YYYY HH:mm
+  var brMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[T\s]+(\d{1,2}):(\d{1,2}))?/);
+  if (brMatch) {
+    var day = brMatch[1].length === 1 ? '0' + brMatch[1] : brMatch[1];
+    var month = brMatch[2].length === 1 ? '0' + brMatch[2] : brMatch[2];
+    var year = brMatch[3];
+    var hour = brMatch[4] ? (brMatch[4].length === 1 ? '0' + brMatch[4] : brMatch[4]) : '12';
+    var min = brMatch[5] ? (brMatch[5].length === 1 ? '0' + brMatch[5] : brMatch[5]) : '00';
+    return year + '-' + month + '-' + day + 'T' + hour + ':' + min;
+  }
+  return str;
 }
 
 /**
