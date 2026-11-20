@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+    <title>Rumo — Controle de Despesas</title>
+    <meta
+      name="description"
+      content="Webapp mobile-first minimalista para controle de despesas pessoais com gráficos interativos, meta de orçamento e integração com Google Apps Script."
+    />
+    <meta property="og:title" content="Rumo — Controle de Despesas" />
+    <meta
+      property="og:description"
+      content="Acompanhe seus gastos mensais com clareza e sincronize diretamente com sua planilha via Google Apps Script."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#E3E8EF" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Rumo" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-180.png?v=8" />
+    <link rel="icon" type="image/svg+xml" href="/icons/rumo-liquid-glass.svg?v=8" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon-64x64.png?v=8" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?v=8" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('rumo_settings_v1');
+          var theme = 'system';
+          var clarity = 'equilibrado';
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && (parsed.theme === 'dark' || parsed.theme === 'light' || parsed.theme === 'system')) {
+              theme = parsed.theme;
+            }
+            if (
+              parsed &&
+              (parsed.glassClarity === 'sutil' ||
+                parsed.glassClarity === 'equilibrado' ||
+                parsed.glassClarity === 'cristal')
+            ) {
+              clarity = parsed.glassClarity;
+            }
+          }
+          document.documentElement.setAttribute('data-glass-clarity', clarity);
+          var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (theme === 'dark' || (theme === 'system' && prefersDark)) {
+            document.documentElement.classList.add('dark');
+          }
+
+          var nav = navigator || {};
+          var ua = nav.userAgent || '';
+          var isMobile =
+            (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+            /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+          var cores = typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : 6;
+          var memoryGb = typeof nav.deviceMemory === 'number' ? nav.deviceMemory : 6;
+          var saveData = Boolean(nav.connection && nav.connection.saveData);
+          var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          var reducedTransparency =
+            window.matchMedia && window.matchMedia('(prefers-reduced-transparency: reduce)').matches;
+
+          var isLowPower =
+            reducedTransparency ||
+            saveData ||
+            cores <= 2 ||
+            memoryGb <= 2 ||
+            (isMobile && (cores <= 4 || memoryGb <= 3 || reducedMotion));
+
+          document.documentElement.setAttribute('data-glass-tier', isLowPower ? 'lite' : 'balanced');
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-[#E3E8EF] text-slate-900 antialiased dark:bg-[#0A0F17] dark:text-slate-100">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

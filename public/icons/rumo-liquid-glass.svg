@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <clipPath id="rumo-circle-clip">
+      <circle cx="256" cy="256" r="236" />
+    </clipPath>
+    <clipPath id="rumo-inner-lens-clip">
+      <circle cx="256" cy="256" r="165" />
+    </clipPath>
+  </defs>
+
+  <!-- Ambient Contact Shadow for Floating Lens Depth -->
+  <circle cx="256" cy="264" r="236" fill="#022C22" fill-opacity="0.16" />
+
+  <!-- Apple-Style Dense Translucent Liquid Glass Disc -->
+  <circle cx="256" cy="256" r="236" fill="#065F46" fill-opacity="0.94" />
+  <circle cx="256" cy="256" r="226" fill="#047857" fill-opacity="0.48" />
+
+  <!-- Translucent Light Reflections Clipped Inside Lens (Zero Complex Gradients) -->
+  <g clip-path="url(#rumo-circle-clip)">
+    <!-- Upper Gloss Dome Reflection -->
+    <path d="M24 200 C80 90 160 40 256 40 C352 40 432 90 488 200 C406 130 334 100 256 100 C178 100 106 130 24 200 Z" fill="#FFFFFF" fill-opacity="0.22" />
+    <!-- High-Gloss Specular Crest -->
+    <path d="M84 120 C132 55 190 28 256 28 C322 28 380 55 428 120 C364 72 312 54 256 54 C200 54 148 72 84 120 Z" fill="#FFFFFF" fill-opacity="0.28" />
+    <!-- Diagonal Crystal Light Ray Sweep -->
+    <path d="M80 20 L180 20 L40 492 L20 460 Z" fill="#FFFFFF" fill-opacity="0.08" />
+    <path d="M220 20 L260 20 L110 492 L70 492 Z" fill="#FFFFFF" fill-opacity="0.05" />
+    <!-- Bottom Secondary Caustic Reflection -->
+    <path d="M56 360 C112 440 180 472 256 472 C332 472 400 440 456 360 C392 414 326 438 256 438 C186 438 120 414 56 360 Z" fill="#6EE7B7" fill-opacity="0.20" />
+  </g>
+
+  <!-- Precision Specular Outer and Inner Glass Rims -->
+  <circle cx="256" cy="256" r="236" stroke="#FFFFFF" stroke-opacity="0.86" stroke-width="4.5" />
+  <circle cx="256" cy="256" r="227" stroke="#A7F3D0" stroke-opacity="0.38" stroke-width="2" />
+  <path d="M130 48 A236 236 0 0 1 382 48" stroke="#FFFFFF" stroke-opacity="0.96" stroke-width="5" stroke-linecap="round" />
+  <path d="M150 466 A236 236 0 0 0 362 466" stroke="#6EE7B7" stroke-opacity="0.48" stroke-width="3" stroke-linecap="round" />
+
+  <!-- Inner Liquid Core Medallion -->
+  <circle cx="256" cy="256" r="165" fill="#FFFFFF" fill-opacity="0.07" />
+  <g clip-path="url(#rumo-inner-lens-clip)">
+    <path d="M96 210 C140 135 194 105 256 105 C318 105 372 135 416 210 C364 165 312 145 256 145 C200 145 148 165 96 210 Z" fill="#FFFFFF" fill-opacity="0.14" />
+  </g>
+  <circle cx="256" cy="256" r="165" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="2.5" />
+  <circle cx="256" cy="256" r="157" stroke="#A7F3D0" stroke-opacity="0.24" stroke-width="1.5" />
+  <path d="M152 160 A165 165 0 0 1 256 91" stroke="#FFFFFF" stroke-opacity="0.92" stroke-width="4.5" stroke-linecap="round" />
+
+  <!-- Intertwined Minimalist Glass Monogram: Refined 'R' woven seamlessly with Stylized '$' -->
+  <!-- Layer 1: Stylized '$' (Vertical Currency Spine) -->
+  <path d="M298 152 V360" stroke="#022C22" stroke-opacity="0.12" stroke-width="14" stroke-linecap="round" />
+  <path d="M298 150 V358" stroke="#FFFFFF" stroke-opacity="0.26" stroke-width="19" stroke-linecap="round" />
+  <path d="M298 150 V358" stroke="#D1FAE5" stroke-opacity="0.92" stroke-width="11" stroke-linecap="round" />
+
+  <!-- Layer 1b: Stylized '$' (S-curve path) -->
+  <path
+    d="M338 196 C338 174 320 162 298 162 C274 162 258 174 258 196 C258 216 274 227 298 235 C320 243 340 256 340 282 C340 307 320 322 296 322 C272 322 256 308 254 286"
+    stroke="#022C22"
+    stroke-opacity="0.12"
+    stroke-width="21"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M338 194 C338 172 320 160 298 160 C274 160 258 172 258 194 C258 214 274 225 298 233 C320 241 340 254 340 280 C340 305 320 320 296 320 C272 320 256 306 254 284"
+    stroke="#FFFFFF"
+    stroke-opacity="0.28"
+    stroke-width="26"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M338 194 C338 172 320 160 298 160 C274 160 258 172 258 194 C258 214 274 225 298 233 C320 241 340 254 340 280 C340 305 320 320 296 320 C272 320 256 306 254 284"
+    stroke="#ECFDF5"
+    stroke-opacity="0.96"
+    stroke-width="17"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Weave Separation: where R's upper loop weaves OVER the upper '$' S-curve -->
+  <path
+    d="M248 172 C262 180 270 192 270 208 C270 224 262 236 248 244"
+    stroke="#065F46"
+    stroke-opacity="0.94"
+    stroke-width="30"
+    stroke-linecap="round"
+  />
+
+  <!-- Layer 2: Elegant Sculpted Capital 'R' -->
+  <path
+    d="M162 166 V346 M162 168 H224 C256 168 276 186 276 212 C276 238 256 256 224 256 H162 M218 256 L272 346"
+    stroke="#022C22"
+    stroke-opacity="0.14"
+    stroke-width="24"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M162 164 V344 M162 166 H224 C256 166 276 184 276 210 C276 236 256 254 224 254 H162 M218 254 L272 344"
+    stroke="#FFFFFF"
+    stroke-opacity="0.30"
+    stroke-width="29"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M162 164 V344 M162 166 H224 C256 166 276 184 276 210 C276 236 256 254 224 254 H162 M218 254 L272 344"
+    stroke="#FFFFFF"
+    stroke-opacity="0.98"
+    stroke-width="21"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M160 162 V342 M160 164 H222 C254 164 274 182 274 208 C274 234 254 252 222 252 H160 M216 252 L270 342"
+    stroke="#FFFFFF"
+    stroke-opacity="0.96"
+    stroke-width="5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Layer 3: Weave Separation where lower '$' tail weaves OVER R's leg -->
+  <path
+    d="M280 312 C266 306 258 296 256 284"
+    stroke="#065F46"
+    stroke-opacity="0.94"
+    stroke-width="26"
+    stroke-linecap="round"
+  />
+  <path
+    d="M298 233 C320 241 340 254 340 280 C340 305 320 320 296 320 C272 320 256 306 254 284"
+    stroke="#FFFFFF"
+    stroke-opacity="0.28"
+    stroke-width="25"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M298 233 C320 241 340 254 340 280 C340 305 320 320 296 320 C272 320 256 306 254 284"
+    stroke="#ECFDF5"
+    stroke-opacity="0.98"
+    stroke-width="17"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M296 231 C318 239 338 252 338 278 C338 303 318 318 294 318 C270 318 254 304 252 282"
+    stroke="#FFFFFF"
+    stroke-opacity="0.94"
+    stroke-width="4.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
