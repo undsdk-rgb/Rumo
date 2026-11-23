@@ -5,6 +5,7 @@ import {
   Clock,
   Download,
   LayoutGrid,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -30,6 +31,7 @@ interface TransactionListProps {
   error: string | null;
   canDelete: boolean;
   privacyMode: boolean;
+  onEditTransaction?: (tx: Transaction) => void;
   onDeleteTransaction?: (id: string) => void;
   onRetry: () => void;
   onOpenSettings: () => void;
@@ -48,6 +50,7 @@ export function TransactionList({
   error,
   canDelete,
   privacyMode,
+  onEditTransaction,
   onDeleteTransaction,
   onRetry,
   onOpenSettings,
@@ -302,7 +305,11 @@ export function TransactionList({
                   onTouchMove={(e) => handleRowTouchMove(tx.id, e)}
                   onTouchEnd={handleRowTouchEnd}
                   onClick={() => {
-                    if (isSwiped) setSwipedTxId(null);
+                    if (isSwiped) {
+                      setSwipedTxId(null);
+                    } else if (onEditTransaction) {
+                      onEditTransaction(tx);
+                    }
                   }}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -312,7 +319,7 @@ export function TransactionList({
                     delay: Math.min(index * 0.025, 0.25),
                     ease: ITEM_EASE,
                   }}
-                  className="relative overflow-hidden rounded-xl"
+                  className="relative overflow-hidden rounded-xl cursor-pointer"
                 >
                   {/* Revealed Swipe-to-Delete Action (hidden when at rest so it never shows through glass) */}
                   {canDelete && onDeleteTransaction && (
@@ -381,13 +388,29 @@ export function TransactionList({
                       </div>
                     </div>
 
-                    <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
                       <AnimatedMoney
                         value={tx.valor}
                         hidden={privacyMode}
                         durationMs={0}
                         className="text-sm font-semibold text-slate-900 sm:text-[15px] dark:text-white"
                       />
+
+                      {onEditTransaction && (
+                        <motion.button
+                          type="button"
+                          whileTap={{ scale: 0.88 }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEditTransaction(tx);
+                          }}
+                          aria-label={`Editar lançamento ${tx.estabelecimento}`}
+                          title="Editar lançamento"
+                          className="hidden h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-emerald-50 hover:text-emerald-600 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 sm:flex sm:opacity-0 sm:group-hover:opacity-100 dark:hover:bg-emerald-950/50 dark:hover:text-emerald-400"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </motion.button>
+                      )}
 
                       {canDelete && onDeleteTransaction && (
                         <motion.button

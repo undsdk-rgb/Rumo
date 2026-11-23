@@ -9,7 +9,9 @@ import {
   getNotionConfig,
   getNotionTransactions,
   createNotionTransaction,
+  updateNotionTransaction,
   deleteNotionTransaction,
+  findNotionPageByMatch,
 } from './backend/notionService.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -334,7 +336,7 @@ async function startServer() {
       }
     }
 
-    // 2. Write to Google Sheets (redundancy / 2-way mirror)
+    // 2. Write to Google Sheets (redundancy / 2-way mirror, skip Notion write in Apps Script)
     if (cfg.configured) {
       try {
         const result = await callAppsScriptPost(cfg.scriptUrl, {
@@ -345,6 +347,8 @@ async function startServer() {
           categoria: String(categoria || 'Outros'),
           metodo: String(metodo || 'Pix'),
           data: String(data || ''),
+          notionId: createdNotion?.id || undefined,
+          skipNotion: Boolean(createdNotion),
         });
         if (result && result.status !== 'error') {
           createdSheets = result.data;
@@ -361,6 +365,7 @@ async function startServer() {
       categoria: categoria || 'Outros',
       metodo: metodo || 'Pix',
       data: data || new Date().toISOString().slice(0, 16),
+      notionId: createdNotion?.id || undefined,
     };
 
     res.status(201).json({
@@ -374,11 +379,100 @@ async function startServer() {
     });
   });
 
+  // Update an existing transaction (Bidirectional: updates Notion AND Google Sheets)
+  app.put('/api/transactions/:id', async (req, res) => {
+    const cfg = getBackendConfig();
+    const notionCfg = getNotionConfig();
+    const id = String(req.params.id || '').trim();
+    const { estabelecimento, valor, categoria, metodo, data, notionId, original } = req.body || {};
+
+    if (!id || !estabelecimento || !Number.isFinite(Number(valor)) || Number(valor) <= 0) {
+      res.status(400).json({
+        error: 'ID, estabelecimento e valor maior que zero são obrigatórios.',
+      });
+      return;
+    }
+
+    let updatedNotion: any = null;
+    let updatedSheets: any = null;
+    let targetNotionId = notionId || (id.length > 20 && id.includes('-') && !id.startsWith('sheet-') ? id : null);
+
+    // 1. Update in Notion
+    if (notionCfg.configured) {
+      try {
+        if (!targetNotionId && original) {
+          targetNotionId = await findNotionPageByMatch({
+            estabelecimento: String(original.estabelecimento || estabelecimento).trim(),
+            valor: Number(original.valor || valor),
+            data: String(original.data || data || ''),
+          });
+        }
+
+        if (targetNotionId) {
+          updatedNotion = await updateNotionTransaction(targetNotionId, {
+            estabelecimento: String(estabelecimento).trim(),
+            valor: Number(valor),
+            categoria: categoria || 'Outros',
+            metodo: String(metodo || 'Pix'),
+            data: String(data || ''),
+          });
+        }
+      } catch (err) {
+        console.error('Erro ao atualizar no Notion:', err);
+      }
+    }
+
+    // 2. Update in Google Sheets
+    if (cfg.configured) {
+      try {
+        const result = await callAppsScriptPost(cfg.scriptUrl, {
+          action: 'update',
+          token: cfg.token,
+          id,
+          estabelecimento: String(estabelecimento).trim(),
+          valor: Number(valor),
+          categoria: String(categoria || 'Outros'),
+          metodo: String(metodo || 'Pix'),
+          data: String(data || ''),
+          notionId: targetNotionId || undefined,
+          original,
+          skipNotion: Boolean(updatedNotion),
+        });
+        if (result && result.status !== 'error') {
+          updatedSheets = result.data;
+        }
+      } catch (err) {
+        console.error('Erro ao atualizar na planilha Google:', err);
+      }
+    }
+
+    const finalData = updatedNotion || updatedSheets || {
+      id,
+      estabelecimento,
+      valor: Number(valor),
+      categoria: categoria || 'Outros',
+      metodo: metodo || 'Pix',
+      data: data || new Date().toISOString().slice(0, 16),
+      notionId: targetNotionId || undefined,
+    };
+
+    res.json({
+      status: 'ok',
+      syncedAt: new Date().toISOString(),
+      data: finalData,
+      mirrored: {
+        notion: Boolean(updatedNotion),
+        sheets: Boolean(updatedSheets),
+      },
+    });
+  });
+
   // Delete transaction (Archives in Notion AND deletes from Google Sheets)
   app.delete('/api/transactions/:id', async (req, res) => {
     const cfg = getBackendConfig();
     const notionCfg = getNotionConfig();
     const id = String(req.params.id || '').trim();
+    const notionId = String(req.query.notionId || req.body?.notionId || '').trim();
 
     if (!id) {
       res.status(400).json({ error: 'ID inválido.' });
@@ -387,12 +481,13 @@ async function startServer() {
 
     let deletedNotion = false;
     let deletedSheets = false;
+    const targetNotionId = notionId || (id.length > 20 && id.includes('-') && !id.startsWith('sheet-') ? id : null);
 
-    if (notionCfg.configured) {
+    if (notionCfg.configured && targetNotionId) {
       try {
-        deletedNotion = await deleteNotionTransaction(id);
+        deletedNotion = await deleteNotionTransaction(targetNotionId);
       } catch (err) {
-        console.warn('Exclusão no Notion falhou ou ID não pertence ao Notion:', err);
+        console.warn('Exclusão no Notion falhou:', err);
       }
     }
 
@@ -402,6 +497,8 @@ async function startServer() {
           action: 'delete',
           token: cfg.token,
           id,
+          notionId: targetNotionId || undefined,
+          skipNotion: Boolean(deletedNotion),
         });
         if (result && result.status !== 'error') {
           deletedSheets = true;
@@ -417,6 +514,44 @@ async function startServer() {
       syncedAt: new Date().toISOString(),
       deleted: { notion: deletedNotion, sheets: deletedSheets },
     });
+  });
+
+  // Remote settings GET & PUT (Mirrors in Google Sheet Config tab)
+  app.get('/api/settings', async (_req, res) => {
+    const cfg = getBackendConfig();
+    if (!cfg.configured) {
+      res.json({ status: 'ok', settings: null });
+      return;
+    }
+
+    try {
+      const result = await callAppsScriptGet(cfg.scriptUrl, {
+        action: 'get_settings',
+        token: cfg.token,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : 'Falha ao buscar configurações.' });
+    }
+  });
+
+  app.put('/api/settings', async (req, res) => {
+    const cfg = getBackendConfig();
+    if (!cfg.configured) {
+      res.status(503).json({ error: 'Planilha não configurada para salvar configurações remotas.' });
+      return;
+    }
+
+    try {
+      const result = await callAppsScriptPost(cfg.scriptUrl, {
+        action: 'save_settings',
+        token: cfg.token,
+        settings: req.body,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : 'Falha ao salvar configurações.' });
+    }
   });
 
   // Mount Vite middleware in development or serve built dist/ in production

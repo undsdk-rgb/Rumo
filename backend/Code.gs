@@ -4,12 +4,12 @@
  *
  * PROPRIEDADES DO SCRIPT (Configurações do Projeto > Propriedades do script):
  *   - API_TOKEN            : Token secreto compartilhado entre WebApp / Atalhos iOS e o Apps Script.
- *   - NOTION_TOKEN         : Token de integração interna da API do Notion (ex: ntn_...).
+ *   - NOTION_TOKEN         : Token de integração interna da API do Notion (ex: ntn_... ou secret_...).
  *   - NOTION_DATABASE_ID   : ID do banco de dados no Notion onde os gastos serão espelhados.
  *
  * COMO IMPLANTAR:
  *   1. No editor do Apps Script, selecione a função "setupPlanilha" e clique em "Executar" para criar as abas.
- *   2. Clique em "Implantar" > "Nova implantação".
+ *   2. Clique em "Implantar" > "Gerenciar implantações" > "Editar" > "Nova versão" > "Implantar".
  *   3. Tipo: "App da Web".
  *   4. Executar como: "Eu" (sua conta Google).
  *   5. Quem pode acessar: "Qualquer pessoa" (permite requisições autenticadas por token).
@@ -20,11 +20,27 @@ const EXPENSES_SHEET_NAME = 'Despesas';
 const SUMMARY_SHEET_NAME = 'Resumo';
 const CONFIG_SHEET_NAME = 'Config';
 
-const EXPECTED_HEADERS = ['id', 'data', 'estabelecimento', 'valor', 'categoria', 'metodo'];
+// Coluna G adicionada para rastreamento 1:1 com Notion
+const EXPECTED_HEADERS = ['id', 'data', 'estabelecimento', 'valor', 'categoria', 'metodo', 'notion_id'];
 
+// 20 categorias oficiais do Rumo
 const CATEGORIES = [
+  'Geral',
+  'Cartão',
+  'Luz+Agua',
+  'Internet',
+  'Aluguel',
+  'Combustível',
   'Alimentação',
   'Mercado',
+  'Investimento',
+  'Salário',
+  'Extra',
+  'Remédio',
+  'Academia',
+  'Netflix',
+  'Amazon Prime',
+  'Google Drive',
   'Transporte',
   'Lazer',
   'Assinaturas',
@@ -71,7 +87,7 @@ function setupPlanilha() {
       'Rumo configurado com sucesso!\n\n' +
         'Planilha: ' +
         ss.getName() +
-        '\nAbas criadas/atualizadas: Despesas, Resumo e Config.'
+        '\nAbas criadas/atualizadas: Despesas (com notion_id), Resumo e Config (20 categorias).'
     );
   } catch (e) {
     // Contexto sem interface gráfica ativa
@@ -93,6 +109,7 @@ function onOpen() {
     SpreadsheetApp.getUi()
       .createMenu('Rumo')
       .addItem('Criar / atualizar abas e colunas', 'setupPlanilha')
+      .addItem('Testar conexão com o Notion', 'testarConexaoNotion')
       .addToUi();
   } catch (e) {
     // Ignora fora do contexto de UI
@@ -131,16 +148,23 @@ function ensureExpensesSheet_(ss) {
       : [];
 
   const hasExpectedHeaders =
-    firstRowValues.length === EXPECTED_HEADERS.length &&
+    firstRowValues.length >= EXPECTED_HEADERS.length &&
     EXPECTED_HEADERS.every(function (h, idx) {
       return firstRowValues[idx] === h;
     });
 
   if (lastRow === 0 || !hasExpectedHeaders) {
     if (lastRow > 0 && !hasExpectedHeaders) {
-      sheet.insertRowBefore(1);
+      // Se já existem cabeçalhos mas falta a coluna notion_id
+      if (firstRowValues.length === 6 && firstRowValues[0] === 'id') {
+        sheet.getRange(1, 7).setValue('notion_id');
+      } else {
+        sheet.insertRowBefore(1);
+        sheet.getRange(1, 1, 1, EXPECTED_HEADERS.length).setValues([EXPECTED_HEADERS]);
+      }
+    } else {
+      sheet.getRange(1, 1, 1, EXPECTED_HEADERS.length).setValues([EXPECTED_HEADERS]);
     }
-    sheet.getRange(1, 1, 1, EXPECTED_HEADERS.length).setValues([EXPECTED_HEADERS]);
   }
 
   // Estilização do cabeçalho
@@ -154,13 +178,13 @@ function ensureExpensesSheet_(ss) {
   sheet.setRowHeight(1, 32);
   sheet.setFrozenRows(1);
 
-  // Larguras das colunas
-  const widths = [220, 155, 240, 130, 145, 165];
+  // Larguras das colunas: id, data, estabelecimento, valor, categoria, metodo, notion_id
+  const widths = [220, 155, 240, 130, 145, 165, 240];
   for (let c = 0; c < widths.length; c++) {
     sheet.setColumnWidth(c + 1, widths[c]);
   }
 
-  // Formatação e regras de validação
+  // Formatação e regras de validação (todas as 20 categorias)
   const maxRows = sheet.getMaxRows();
   if (maxRows > 1) {
     const rowsToFormat = Math.min(maxRows - 1, 1000);
@@ -219,7 +243,7 @@ function ensureSummarySheet_(ss) {
   sheet.getRange('B5').setNumberFormat('#,##0');
   sheet.getRange('B6').setNumberFormat('R$ #,##0.00');
 
-  // Categorias
+  // Categorias (20 categorias completas)
   sheet
     .getRange('A8:C8')
     .setValues([['Categoria', 'Total (R$)', 'Lançamentos']])
@@ -276,6 +300,14 @@ function ensureConfigSheet_(ss) {
     sheet = ss.insertSheet(CONFIG_SHEET_NAME);
   }
 
+  // Preserva valores existentes caso a aba já contenha preferências salvas
+  const existingValues = sheet.getLastRow() > 1 ? sheet.getDataRange().getValues() : [];
+  const configMap = {};
+  for (let i = 1; i < existingValues.length; i++) {
+    const key = String(existingValues[i][0] || '').trim();
+    if (key) configMap[key] = existingValues[i][1];
+  }
+
   sheet.clear();
 
   sheet
@@ -301,7 +333,7 @@ function ensureConfigSheet_(ss) {
       ? 'Configurado'
       : 'Opcional (defina NOTION_TOKEN e NOTION_DATABASE_ID)';
 
-  const rows = [
+  const baseRows = [
     ['spreadsheet_id', ss.getId()],
     ['aba_principal', EXPENSES_SHEET_NAME],
     ['colunas_despesas', EXPECTED_HEADERS.join(', ')],
@@ -310,10 +342,17 @@ function ensureConfigSheet_(ss) {
     ['token_api', tokenStatus],
     ['sincronizacao_notion', notionStatus],
     ['ultima_inicializacao', now],
+    // Preferências de Usuário do Rumo App
+    ['user_theme', configMap['user_theme'] || 'system'],
+    ['user_glass_clarity', configMap['user_glass_clarity'] || 'equilibrado'],
+    ['user_monthly_budget', configMap['user_monthly_budget'] || 3500],
+    ['user_auto_sync_seconds', configMap['user_auto_sync_seconds'] || 30],
+    ['user_privacy_mode', configMap['user_privacy_mode'] || false],
+    ['user_settings_updated_at', configMap['user_settings_updated_at'] || now],
   ];
 
-  sheet.getRange(2, 1, rows.length, 2).setValues(rows);
-  sheet.setColumnWidth(1, 210);
+  sheet.getRange(2, 1, baseRows.length, 2).setValues(baseRows);
+  sheet.setColumnWidth(1, 230);
   sheet.setColumnWidth(2, 460);
   sheet.setFrozenRows(1);
 
@@ -326,7 +365,7 @@ function ensureConfigSheet_(ss) {
 function getScriptCredentials_() {
   const props = PropertiesService.getScriptProperties();
   const apiToken = (props.getProperty('API_TOKEN') || props.getProperty('RUMO_API_TOKEN') || '').trim();
-  const notionToken = (props.getProperty('NOTION_TOKEN') || '').trim();
+  const notionToken = (props.getProperty('NOTION_TOKEN') || props.getProperty('NOTION_API_KEY') || '').trim();
   const notionDbId = (props.getProperty('NOTION_DATABASE_ID') || '').trim();
 
   return { apiToken: apiToken, notionToken: notionToken, notionDbId: notionDbId };
@@ -383,7 +422,6 @@ function formatRowDate_(rawDate) {
 
 /**
  * Limpa e converte strings monetárias brasileiras ou internacionais para float positivo.
- * Exemplos: "R$ 45,90" -> 45.90 | "45,90" -> 45.90 | 45.9 -> 45.90
  */
 function parseMonetaryValue_(raw) {
   if (typeof raw === 'number') {
@@ -392,14 +430,11 @@ function parseMonetaryValue_(raw) {
   if (!raw) return 0;
 
   let str = String(raw).trim();
-  // Remove símbolos monetários, espaços e caracteres não numéricos exceto vírgula e ponto
   str = str.replace(/[^0-9,\.-]/g, '');
 
   if (str.includes(',') && str.includes('.')) {
-    // Ex: 1.250,50
     str = str.replace(/\./g, '').replace(',', '.');
   } else if (str.includes(',')) {
-    // Ex: 45,90
     str = str.replace(',', '.');
   }
 
@@ -408,14 +443,14 @@ function parseMonetaryValue_(raw) {
 }
 
 /**
- * Normaliza e mapeia categorias do Apple Pay (iOS Shortcuts) e palavras-chave
- * para as categorias exatas do template Rumo.
+ * Normaliza e mapeia categorias do Apple Pay e palavras-chave
+ * para as 20 categorias do template Rumo.
  */
 function resolveCategory_(rawCategory, merchant) {
   const catInput = String(rawCategory || '').trim();
   const merchantLower = String(merchant || '').toLowerCase();
 
-  // 1. Verificação de correspondência exata ou acentuação
+  // 1. Correspondência exata
   const exact = CATEGORIES.find(function (c) {
     return c.toLowerCase() === catInput.toLowerCase();
   });
@@ -426,172 +461,110 @@ function resolveCategory_(rawCategory, merchant) {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
 
-  // 2. Mapeamento de categorias padrão fornecidas pelo Apple Pay / iOS
-  if (
-    catLower.includes('food') ||
-    catLower.includes('drink') ||
-    catLower.includes('restaurant') ||
-    catLower.includes('dining') ||
-    catLower.includes('aliment') ||
-    catLower.includes('cafe') ||
-    catLower.includes('refeicao')
-  ) {
+  // 2. Mapeamento por tipo / palavras-chave
+  if (catLower.includes('luz') || catLower.includes('agua') || catLower.includes('energia') || catLower.includes('enel') || catLower.includes('sabesp')) {
+    return 'Luz+Agua';
+  }
+  if (catLower.includes('internet') || catLower.includes('wifi') || catLower.includes('fibra') || catLower.includes('vivo') || catLower.includes('claro') || catLower.includes('tim')) {
+    return 'Internet';
+  }
+  if (catLower.includes('aluguel') || catLower.includes('condominio') || catLower.includes('imovel') || catLower.includes('moradia')) {
+    return 'Aluguel';
+  }
+  if (catLower.includes('combustivel') || catLower.includes('gasolina') || catLower.includes('etanol') || catLower.includes('posto') || catLower.includes('shell') || catLower.includes('ipiranga')) {
+    return 'Combustível';
+  }
+  if (catLower.includes('remedio') || catLower.includes('farmacia') || catLower.includes('droga') || catLower.includes('saude') || catLower.includes('drogasil') || catLower.includes('raia')) {
+    return 'Remédio';
+  }
+  if (catLower.includes('academia') || catLower.includes('fitness') || catLower.includes('smart fit') || catLower.includes('gym')) {
+    return 'Academia';
+  }
+  if (catLower.includes('netflix')) return 'Netflix';
+  if (catLower.includes('prime') || catLower.includes('amazon')) return 'Amazon Prime';
+  if (catLower.includes('drive') || catLower.includes('google') || catLower.includes('icloud') || catLower.includes('storage') || catLower.includes('nuvem')) return 'Google Drive';
+  if (catLower.includes('invest') || catLower.includes('renda') || catLower.includes('cdi') || catLower.includes('tesouro')) return 'Investimento';
+  if (catLower.includes('salario') || catLower.includes('pagamento') || catLower.includes('provento')) return 'Salário';
+  if (catLower.includes('extra') || catLower.includes('freela') || catLower.includes('bico')) return 'Extra';
+  if (catLower.includes('cartao') || catLower.includes('fatura') || catLower.includes('nubank') || catLower.includes('bradesco') || catLower.includes('itau')) return 'Cartão';
+
+  if (catLower.includes('food') || catLower.includes('restaurante') || catLower.includes('aliment') || catLower.includes('cafe') || catLower.includes('refeicao') || catLower.includes('ifood') || catLower.includes('mcdonald')) {
     return 'Alimentação';
   }
-
-  if (
-    catLower.includes('grocer') ||
-    catLower.includes('mercad') ||
-    catLower.includes('supermarket') ||
-    catLower.includes('hortifruti')
-  ) {
+  if (catLower.includes('grocer') || catLower.includes('mercad') || catLower.includes('supermercado') || catLower.includes('pao de acucar') || catLower.includes('carrefour') || catLower.includes('hortifruti')) {
     return 'Mercado';
   }
-
-  if (
-    catLower.includes('transport') ||
-    catLower.includes('transit') ||
-    catLower.includes('gas') ||
-    catLower.includes('fuel') ||
-    catLower.includes('combust') ||
-    catLower.includes('uber') ||
-    catLower.includes('ride') ||
-    catLower.includes('taxi')
-  ) {
+  if (catLower.includes('transport') || catLower.includes('uber') || catLower.includes('99app') || catLower.includes('taxi') || catLower.includes('metro') || catLower.includes('onibus')) {
     return 'Transporte';
   }
-
-  if (
-    catLower.includes('entertain') ||
-    catLower.includes('lazer') ||
-    catLower.includes('movie') ||
-    catLower.includes('cinema') ||
-    catLower.includes('teatro') ||
-    catLower.includes('show') ||
-    catLower.includes('recreation')
-  ) {
+  if (catLower.includes('lazer') || catLower.includes('cinema') || catLower.includes('show') || catLower.includes('bar ') || catLower.includes('teatro') || catLower.includes('viagem')) {
     return 'Lazer';
   }
-
-  if (
-    catLower.includes('subscript') ||
-    catLower.includes('assinat') ||
-    catLower.includes('streaming') ||
-    catLower.includes('service')
-  ) {
+  if (catLower.includes('assinat') || catLower.includes('subscript') || catLower.includes('spotify') || catLower.includes('youtube') || catLower.includes('hbo') || catLower.includes('disney')) {
     return 'Assinaturas';
   }
 
-  // 3. Heurística inteligente por palavras-chave comuns de estabelecimentos
-  if (
-    merchantLower.includes('uber') ||
-    merchantLower.includes('99app') ||
-    merchantLower.includes('posto') ||
-    merchantLower.includes('shell') ||
-    merchantLower.includes('ipiranga') ||
-    merchantLower.includes('sem parar') ||
-    merchantLower.includes('veloe') ||
-    merchantLower.includes('estacionamento')
-  ) {
-    return 'Transporte';
-  }
+  // 3. Heurísticas por estabelecimento
+  if (merchantLower.includes('posto') || merchantLower.includes('shell') || merchantLower.includes('ipiranga')) return 'Combustível';
+  if (merchantLower.includes('uber') || merchantLower.includes('99app') || merchantLower.includes('sem parar') || merchantLower.includes('veloe')) return 'Transporte';
+  if (merchantLower.includes('drogasil') || merchantLower.includes('droga raia') || merchantLower.includes('drogaria') || merchantLower.includes('farmacia')) return 'Remédio';
+  if (merchantLower.includes('smart fit') || merchantLower.includes('bluefit') || merchantLower.includes('academia')) return 'Academia';
+  if (merchantLower.includes('ifood') || merchantLower.includes('mcdonald') || merchantLower.includes('starbucks') || merchantLower.includes('padaria') || merchantLower.includes('burger')) return 'Alimentação';
+  if (merchantLower.includes('carrefour') || merchantLower.includes('pao de acucar') || merchantLower.includes('extra') || merchantLower.includes('assai') || merchantLower.includes('atacadao') || merchantLower.includes('supermercado')) return 'Mercado';
 
-  if (
-    merchantLower.includes('ifood') ||
-    merchantLower.includes('restaurante') ||
-    merchantLower.includes('padaria') ||
-    merchantLower.includes('starbucks') ||
-    merchantLower.includes('mcdonald') ||
-    merchantLower.includes('burger') ||
-    merchantLower.includes('outback') ||
-    merchantLower.includes('pizza') ||
-    merchantLower.includes('bar ')
-  ) {
-    return 'Alimentação';
-  }
-
-  if (
-    merchantLower.includes('pao de acucar') ||
-    merchantLower.includes('carrefour') ||
-    merchantLower.includes('supermercado') ||
-    merchantLower.includes('mercado') ||
-    merchantLower.includes('extra') ||
-    merchantLower.includes('assai') ||
-    merchantLower.includes('atacadao') ||
-    merchantLower.includes('hortifruti') ||
-    merchantLower.includes('da terra')
-  ) {
-    return 'Mercado';
-  }
-
-  if (
-    merchantLower.includes('netflix') ||
-    merchantLower.includes('spotify') ||
-    merchantLower.includes('icloud') ||
-    merchantLower.includes('apple.com/bill') ||
-    merchantLower.includes('prime') ||
-    merchantLower.includes('amazon prime') ||
-    merchantLower.includes('youtube') ||
-    merchantLower.includes('hbo') ||
-    merchantLower.includes('max') ||
-    merchantLower.includes('disney')
-  ) {
-    return 'Assinaturas';
-  }
-
-  if (
-    merchantLower.includes('cinemark') ||
-    merchantLower.includes('cinema') ||
-    merchantLower.includes('teatro') ||
-    merchantLower.includes('sympla') ||
-    merchantLower.includes('ingresso')
-  ) {
-    return 'Lazer';
-  }
-
-  return 'Outros';
+  return 'Geral';
 }
 
 /**
- * Sincroniza o lançamento com o banco de dados do Notion.
- * Operação não-bloqueante: se a chamada falhar, registra no Logger sem abortar o salvamento na planilha.
+ * Cria o payload com schema exato do banco de dados do Notion.
+ * Propriedades: Nome, Valor, Tipo, 'Categoria ', 'Data programada ', 'Data Realizada', Realizado, Observação.
+ */
+function buildNotionPayload_(item) {
+  const dateOnly = String(item.data || '').slice(0, 10) ||
+    Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+
+  return {
+    Nome: {
+      title: [{ text: { content: String(item.estabelecimento || 'Despesa').trim() } }],
+    },
+    Valor: {
+      number: Number(item.valor || 0),
+    },
+    Tipo: {
+      select: { name: 'Saída' },
+    },
+    'Categoria ': {
+      select: { name: String(item.categoria || 'Geral').trim() },
+    },
+    'Data programada ': {
+      date: { start: dateOnly },
+    },
+    'Data Realizada': {
+      date: { start: dateOnly },
+    },
+    Realizado: {
+      checkbox: true,
+    },
+    Observação: {
+      rich_text: [{ text: { content: 'Método: ' + (item.metodo || 'Apple Pay') + ' (Lançado via Rumo)' } }],
+    },
+  };
+}
+
+/**
+ * Sincroniza novo lançamento com o Notion (POST /v1/pages).
+ * Retorna o ID da página gerada no Notion ou null se desativado/erro.
  */
 function syncToNotion_(item) {
   const creds = getScriptCredentials_();
   if (!creds.notionToken || !creds.notionDbId) {
-    return; // Notion não configurado
+    return null;
   }
 
   try {
-    const dateOnly = String(item.data || '').slice(0, 10) ||
-      Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-
     const payload = {
       parent: { database_id: creds.notionDbId },
-      properties: {
-        Nome: {
-          title: [
-            {
-              text: {
-                content: String(item.estabelecimento || 'Despesa').trim(),
-              },
-            },
-          ],
-        },
-        Valor: {
-          number: item.valor,
-        },
-        Data: {
-          date: {
-            start: dateOnly,
-          },
-        },
-        Categoria: {
-          select: {
-            name: item.categoria,
-          },
-        },
-      },
+      properties: buildNotionPayload_(item),
     };
 
     const options = {
@@ -607,19 +580,222 @@ function syncToNotion_(item) {
 
     const response = UrlFetchApp.fetch('https://api.notion.com/v1/pages', options);
     const code = response.getResponseCode();
+    const resText = response.getContentText();
 
     if (code >= 200 && code < 300) {
-      Logger.log('Sincronizado com o Notion com sucesso: ' + item.estabelecimento);
+      const resJson = JSON.parse(resText);
+      Logger.log('Criado no Notion com sucesso: ' + item.estabelecimento + ' (ID: ' + resJson.id + ')');
+      return resJson.id;
     } else {
-      Logger.log('Erro ao sincronizar com Notion (HTTP ' + code + '): ' + response.getContentText());
+      Logger.log('Erro ao criar no Notion (HTTP ' + code + '): ' + resText);
+      return null;
     }
   } catch (err) {
-    Logger.log('Exceção ao chamar API do Notion: ' + err);
+    Logger.log('Exceção ao sincronizar com Notion: ' + err);
+    return null;
   }
 }
 
 /**
- * Ponto de entrada GET (leitura rápida com filtro de mês)
+ * Atualiza lançamento existente no Notion (PATCH /v1/pages/:id).
+ */
+function updateNotion_(pageId, item) {
+  const creds = getScriptCredentials_();
+  if (!creds.notionToken || !pageId) return false;
+
+  try {
+    const payload = {
+      properties: buildNotionPayload_(item),
+    };
+
+    const options = {
+      method: 'patch',
+      contentType: 'application/json',
+      headers: {
+        Authorization: 'Bearer ' + creds.notionToken,
+        'Notion-Version': '2022-06-28',
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    };
+
+    const response = UrlFetchApp.fetch('https://api.notion.com/v1/pages/' + pageId, options);
+    const code = response.getResponseCode();
+
+    if (code >= 200 && code < 300) {
+      Logger.log('Atualizado no Notion com sucesso (ID: ' + pageId + ')');
+      return true;
+    } else {
+      Logger.log('Erro ao atualizar no Notion (HTTP ' + code + '): ' + response.getContentText());
+      return false;
+    }
+  } catch (err) {
+    Logger.log('Exceção ao atualizar no Notion: ' + err);
+    return false;
+  }
+}
+
+/**
+ * Arquiva (deleta) lançamento no Notion (PATCH /v1/pages/:id { archived: true }).
+ */
+function archiveNotion_(pageId) {
+  const creds = getScriptCredentials_();
+  if (!creds.notionToken || !pageId) return false;
+
+  try {
+    const options = {
+      method: 'patch',
+      contentType: 'application/json',
+      headers: {
+        Authorization: 'Bearer ' + creds.notionToken,
+        'Notion-Version': '2022-06-28',
+      },
+      payload: JSON.stringify({ archived: true }),
+      muteHttpExceptions: true,
+    };
+
+    const response = UrlFetchApp.fetch('https://api.notion.com/v1/pages/' + pageId, options);
+    const code = response.getResponseCode();
+    return code >= 200 && code < 300;
+  } catch (err) {
+    Logger.log('Exceção ao arquivar no Notion: ' + err);
+    return false;
+  }
+}
+
+/**
+ * Fallback: Busca ID da página no Notion por estabelecimento + data + valor
+ * para itens legados que não possuem notion_id gravado na planilha.
+ */
+function findNotionPageIdByMatch_(item) {
+  const creds = getScriptCredentials_();
+  if (!creds.notionToken || !creds.notionDbId) return null;
+
+  try {
+    const dateOnly = String(item.data || '').slice(0, 10);
+    const body = {
+      page_size: 10,
+      filter: {
+        and: [
+          {
+            property: 'Nome',
+            title: {
+              equals: String(item.estabelecimento || '').trim(),
+            },
+          },
+        ],
+      },
+    };
+
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        Authorization: 'Bearer ' + creds.notionToken,
+        'Notion-Version': '2022-06-28',
+      },
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true,
+    };
+
+    const response = UrlFetchApp.fetch(
+      'https://api.notion.com/v1/databases/' + creds.notionDbId + '/query',
+      options
+    );
+
+    if (response.getResponseCode() === 200) {
+      const data = JSON.parse(response.getContentText());
+      const results = data.results || [];
+      for (let i = 0; i < results.length; i++) {
+        const p = results[i];
+        if (p.archived) continue;
+        const val = p.properties && p.properties.Valor && p.properties.Valor.number;
+        if (typeof val === 'number' && Math.abs(val - Number(item.valor)) < 0.05) {
+          return p.id;
+        }
+      }
+      if (results.length > 0 && !results[0].archived) {
+        return results[0].id;
+      }
+    }
+  } catch (e) {
+    Logger.log('Aviso: falha na busca de página correspondente no Notion: ' + e);
+  }
+  return null;
+}
+
+/**
+ * Função de diagnóstico executável no editor do Apps Script para validar o Notion.
+ */
+function testarConexaoNotion() {
+  const creds = getScriptCredentials_();
+  Logger.log('=== TESTE DE CONEXÃO COM O NOTION ===');
+  Logger.log('Token presente: ' + Boolean(creds.notionToken));
+  Logger.log('Database ID: ' + (creds.notionDbId || 'NÃO CONFIGURADO'));
+
+  if (!creds.notionToken || !creds.notionDbId) {
+    const msg = 'Erro: Defina NOTION_TOKEN e NOTION_DATABASE_ID nas Propriedades do Script.';
+    Logger.log(msg);
+    try {
+      SpreadsheetApp.getUi().alert(msg);
+    } catch (e) {}
+    return { ok: false, message: msg };
+  }
+
+  try {
+    const options = {
+      method: 'get',
+      headers: {
+        Authorization: 'Bearer ' + creds.notionToken,
+        'Notion-Version': '2022-06-28',
+      },
+      muteHttpExceptions: true,
+    };
+
+    const res = UrlFetchApp.fetch(
+      'https://api.notion.com/v1/databases/' + creds.notionDbId,
+      options
+    );
+    const code = res.getResponseCode();
+    const text = res.getContentText();
+
+    if (code === 200) {
+      const db = JSON.parse(text);
+      const title = (db.title && db.title[0] && db.title[0].plain_text) || 'Sem título';
+      const propNames = Object.keys(db.properties || {});
+      const msg =
+        'Conexão com o Notion bem-sucedida!\n\n' +
+        'Database: ' +
+        title +
+        '\nPropriedades encontradas (' +
+        propNames.length +
+        '): ' +
+        propNames.join(', ');
+      Logger.log(msg);
+      try {
+        SpreadsheetApp.getUi().alert(msg);
+      } catch (e) {}
+      return { ok: true, title: title, properties: propNames };
+    } else {
+      const msg = 'Falha na conexão com o Notion (HTTP ' + code + '):\n' + text;
+      Logger.log(msg);
+      try {
+        SpreadsheetApp.getUi().alert(msg);
+      } catch (e) {}
+      return { ok: false, error: text };
+    }
+  } catch (err) {
+    const msg = 'Exceção ao testar Notion: ' + err;
+    Logger.log(msg);
+    try {
+      SpreadsheetApp.getUi().alert(msg);
+    } catch (e) {}
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * Ponto de entrada GET (leitura de transações e configurações)
  * Endpoint: ?token=<TOKEN>&mes=YYYY-MM
  */
 function doGet(e) {
@@ -630,28 +806,46 @@ function doGet(e) {
       return jsonResponse_({ status: 'error', message: auth.message });
     }
 
-    // Inicialização remota de abas (?action=setup&token=...)
-    if (params.action === 'setup') {
+    const action = String(params.action || 'list').toLowerCase();
+    const ss = getSpreadsheet_();
+
+    // 1. Inicialização remota de abas (?action=setup&token=...)
+    if (action === 'setup') {
       const setupResult = setupPlanilha();
       return jsonResponse_(setupResult);
     }
 
-    const ss = getSpreadsheet_();
-    let sheet = ss.getSheetByName(EXPENSES_SHEET_NAME);
-    if (!sheet) {
-      sheet = ensureExpensesSheet_(ss);
-    }
-
-    // Ping / Health Check (?action=ping&token=...)
-    if (params.action === 'ping') {
+    // 2. Ping / Health Check (?action=ping&token=...)
+    if (action === 'ping') {
+      const creds = getScriptCredentials_();
       return jsonResponse_({
         status: 'ok',
         spreadsheetId: ss.getId(),
         spreadsheetName: ss.getName(),
-        sheetName: sheet.getName(),
-        totalRows: Math.max(0, sheet.getLastRow() - 1),
+        notionConfigured: Boolean(creds.notionToken && creds.notionDbId),
         serverTime: new Date().toISOString(),
       });
+    }
+
+    // 3. Leitura de Configurações salvas (?action=get_settings&token=...)
+    if (action === 'get_settings') {
+      const configSheet = ss.getSheetByName(CONFIG_SHEET_NAME) || ensureConfigSheet_(ss);
+      const rows = configSheet.getDataRange().getValues();
+      const settings = {};
+      for (let i = 1; i < rows.length; i++) {
+        const k = String(rows[i][0] || '').trim();
+        if (k.startsWith('user_')) {
+          const cleanKey = k.replace(/^user_/, '');
+          settings[cleanKey] = rows[i][1];
+        }
+      }
+      return jsonResponse_({ status: 'ok', settings: settings });
+    }
+
+    // 4. Listagem de Transações (?mes=YYYY-MM&token=...)
+    let sheet = ss.getSheetByName(EXPENSES_SHEET_NAME);
+    if (!sheet) {
+      sheet = ensureExpensesSheet_(ss);
     }
 
     const mes = String(params.mes || '').trim(); // Formato YYYY-MM
@@ -665,6 +859,7 @@ function doGet(e) {
       const valor = rows[i][3];
       const categoria = rows[i][4];
       const metodo = rows[i][5];
+      const notionId = rows[i][6];
 
       if (!estabelecimento && !valor) continue;
 
@@ -676,8 +871,9 @@ function doGet(e) {
         data: isoDate,
         estabelecimento: String(estabelecimento || '').trim(),
         valor: typeof valor === 'number' ? valor : parseMonetaryValue_(valor),
-        categoria: String(categoria || 'Outros').trim(),
+        categoria: String(categoria || 'Geral').trim(),
         metodo: String(metodo || 'Apple Pay').trim(),
+        notionId: notionId ? String(notionId).trim() : undefined,
       });
     }
 
@@ -693,8 +889,7 @@ function doGet(e) {
 }
 
 /**
- * Ponto de entrada POST (inclusão com idempotência e exclusão)
- * Suporta payloads do Apple Pay (Atalhos do iOS) e do Rumo WebApp
+ * Ponto de entrada POST (inclusão, edição, exclusão e gravação de preferências)
  */
 function doPost(e) {
   const lock = LockService.getScriptLock();
@@ -722,7 +917,54 @@ function doPost(e) {
 
     const action = String(body.action || 'create').toLowerCase();
 
-    // 1. Exclusão de lançamento
+    // 1. Gravar configurações (?action=save_settings)
+    if (action === 'save_settings') {
+      const configSheet = ss.getSheetByName(CONFIG_SHEET_NAME) || ensureConfigSheet_(ss);
+      const confData = configSheet.getDataRange().getValues();
+      const settingsPayload = body.settings || {};
+      const nowIso = new Date().toISOString();
+
+      const keyMap = {
+        theme: 'user_theme',
+        glassClarity: 'user_glass_clarity',
+        monthlyBudget: 'user_monthly_budget',
+        autoSyncSeconds: 'user_auto_sync_seconds',
+        privacyMode: 'user_privacy_mode',
+      };
+
+      for (const [propKey, sheetKey] of Object.entries(keyMap)) {
+        if (settingsPayload[propKey] !== undefined) {
+          let found = false;
+          for (let r = 1; r < confData.length; r++) {
+            if (String(confData[r][0] || '').trim() === sheetKey) {
+              configSheet.getRange(r + 1, 2).setValue(settingsPayload[propKey]);
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            configSheet.appendRow([sheetKey, settingsPayload[propKey]]);
+          }
+        }
+      }
+
+      // Atualiza timestamp
+      let tsFound = false;
+      for (let r = 1; r < confData.length; r++) {
+        if (String(confData[r][0] || '').trim() === 'user_settings_updated_at') {
+          configSheet.getRange(r + 1, 2).setValue(nowIso);
+          tsFound = true;
+          break;
+        }
+      }
+      if (!tsFound) {
+        configSheet.appendRow(['user_settings_updated_at', nowIso]);
+      }
+
+      return jsonResponse_({ status: 'ok', savedAt: nowIso });
+    }
+
+    // 2. Exclusão de lançamento (?action=delete)
     if (action === 'delete') {
       const targetId = String(body.id || '').trim();
       if (!targetId) {
@@ -732,18 +974,24 @@ function doPost(e) {
       for (let i = 1; i < rows.length; i++) {
         const rowId = String(rows[i][0] || 'row-' + (i + 1));
         if (rowId === targetId) {
+          const notionId = String(rows[i][6] || body.notionId || '').trim();
           sheet.deleteRow(i + 1);
+
+          // Arquiva no Notion se configurado e não solicitado skip
+          if (notionId && body.skipNotion !== true) {
+            archiveNotion_(notionId);
+          }
           return jsonResponse_({ status: 'ok', deletedId: targetId });
         }
       }
       return jsonResponse_({ status: 'error', message: 'Registro não encontrado na planilha.' });
     }
 
-    // 2. Extração e normalização de dados (Apple Pay Shortcuts ou WebApp)
+    // Extração e normalização de dados comuns (criação e edição)
+    const targetId = String(body.id || '').trim();
     const estabelecimento = String(
       body.estabelecimento || body.merchant || body.local || ''
     ).trim();
-
     const rawValor = body.valor !== undefined ? body.valor : body.amount;
     const valor = parseMonetaryValue_(rawValor);
 
@@ -767,12 +1015,102 @@ function doPost(e) {
       });
     }
 
-    // 3. Idempotência / Anti-duplicidade (verifica últimas 5 linhas nos últimos 2 minutos)
+    // 3. Edição de lançamento (?action=update)
+    if (action === 'update') {
+      if (!targetId) {
+        return jsonResponse_({ status: 'error', message: 'ID obrigatório para edição.' });
+      }
+
+      const rows = sheet.getDataRange().getValues();
+      let rowIndex = -1;
+      let existingNotionId = String(body.notionId || '').trim();
+
+      for (let i = 1; i < rows.length; i++) {
+        const rowId = String(rows[i][0] || 'row-' + (i + 1));
+        if (rowId === targetId) {
+          rowIndex = i + 1;
+          if (!existingNotionId) {
+            existingNotionId = String(rows[i][6] || '').trim();
+          }
+          break;
+        }
+      }
+
+      // Fallback: se o ID não bater diretamente, busca por aproximação (estabelecimento antigo + valor + data)
+      if (rowIndex === -1 && body.original) {
+        const origEst = String(body.original.estabelecimento || '').trim().toLowerCase();
+        const origVal = parseMonetaryValue_(body.original.valor);
+        const origDate = String(body.original.data || '').slice(0, 10);
+
+        for (let i = 1; i < rows.length; i++) {
+          const rEst = String(rows[i][2] || '').trim().toLowerCase();
+          const rVal = parseMonetaryValue_(rows[i][3]);
+          const rDate = formatRowDate_(rows[i][1]).slice(0, 10);
+
+          if (rEst === origEst && Math.abs(rVal - origVal) < 0.05 && rDate === origDate) {
+            rowIndex = i + 1;
+            if (!existingNotionId) {
+              existingNotionId = String(rows[i][6] || '').trim();
+            }
+            break;
+          }
+        }
+      }
+
+      if (rowIndex === -1) {
+        return jsonResponse_({ status: 'error', message: 'Lançamento não encontrado para edição.' });
+      }
+
+      // Se ainda não temos notion_id, tenta localizar a página correspondente no Notion
+      if (!existingNotionId && body.skipNotion !== true) {
+        existingNotionId = findNotionPageIdByMatch_(body.original || { estabelecimento, valor, data });
+      }
+
+      // Atualiza na planilha Google: data, estabelecimento, valor, categoria, metodo, notion_id
+      sheet.getRange(rowIndex, 2, 1, 6).setValues([[
+        data,
+        estabelecimento,
+        valor,
+        categoria,
+        metodo,
+        existingNotionId || '',
+      ]]);
+
+      const updatedItem = {
+        id: targetId,
+        data: data,
+        estabelecimento: estabelecimento,
+        valor: valor,
+        categoria: categoria,
+        metodo: metodo,
+        notionId: existingNotionId || undefined,
+      };
+
+      // Atualiza no Notion se configurado e não solicitado skip
+      if (existingNotionId && body.skipNotion !== true) {
+        updateNotion_(existingNotionId, updatedItem);
+      } else if (!existingNotionId && body.skipNotion !== true) {
+        // Se a página não existia, cria e grava o notion_id
+        const newNotionId = syncToNotion_(updatedItem);
+        if (newNotionId) {
+          sheet.getRange(rowIndex, 7).setValue(newNotionId);
+          updatedItem.notionId = newNotionId;
+        }
+      }
+
+      return jsonResponse_({
+        status: 'ok',
+        data: updatedItem,
+      });
+    }
+
+    // 4. Criação de lançamento (?action=create)
+    // Idempotência / Anti-duplicidade (verifica últimas 5 linhas nos últimos 2 minutos)
     const lastRow = sheet.getLastRow();
     if (lastRow > 1) {
       const checkCount = Math.min(5, lastRow - 1);
       const startRow = lastRow - checkCount + 1;
-      const recentRows = sheet.getRange(startRow, 1, checkCount, 6).getValues();
+      const recentRows = sheet.getRange(startRow, 1, checkCount, EXPECTED_HEADERS.length).getValues();
 
       const parseDateMs = function (dStr) {
         const d = new Date(dStr);
@@ -789,7 +1127,6 @@ function doPost(e) {
         const rMs = parseDateMs(rDate);
         const timeDiffMs = Math.abs(incomingMs - rMs);
 
-        // Se o valor e estabelecimento forem idênticos em menos de 2 minutos (120.000ms)
         const isSameMerchant = rEstab.toLowerCase() === estabelecimento.toLowerCase();
         const isSameAmount = Math.abs(rValor - valor) < 0.01;
         const isRecent = timeDiffMs <= 120000;
@@ -807,15 +1144,31 @@ function doPost(e) {
               valor: rValor,
               categoria: String(recentRows[r][4]),
               metodo: String(recentRows[r][5]),
+              notionId: String(recentRows[r][6] || '').trim() || undefined,
             },
           });
         }
       }
     }
 
-    // 4. Inserção na Planilha Google
     const id = Utilities.getUuid();
-    sheet.appendRow([id, data, estabelecimento, valor, categoria, metodo]);
+    let notionId = String(body.notionId || '').trim();
+
+    // Sincroniza com o Notion antes ou em paralelo, se não vier do servidor local (skipNotion)
+    if (!notionId && body.skipNotion !== true) {
+      const createdNotionId = syncToNotion_({
+        estabelecimento: estabelecimento,
+        valor: valor,
+        categoria: categoria,
+        metodo: metodo,
+        data: data,
+      });
+      if (createdNotionId) {
+        notionId = createdNotionId;
+      }
+    }
+
+    sheet.appendRow([id, data, estabelecimento, valor, categoria, metodo, notionId || '']);
 
     const createdItem = {
       id: id,
@@ -824,10 +1177,8 @@ function doPost(e) {
       valor: valor,
       categoria: categoria,
       metodo: metodo,
+      notionId: notionId || undefined,
     };
-
-    // 5. Sincronização em segundo plano com o Notion (não-bloqueante)
-    syncToNotion_(createdItem);
 
     return jsonResponse_({
       status: 'ok',

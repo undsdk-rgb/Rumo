@@ -5,7 +5,7 @@ import type {
   SyncQueueItem,
   Transaction,
 } from '../types';
-import { createTransaction, deleteTransaction, isNetworkError } from './api';
+import { createTransaction, updateTransaction, deleteTransaction, isNetworkError } from './api';
 
 const QUEUE_STORAGE_KEY = 'rumo_sync_queue_v1';
 const SWR_SNAPSHOT_STORAGE_KEY = 'rumo_swr_months_v1';
@@ -273,6 +273,72 @@ class OfflineSyncManager {
   }
 
   /**
+   * Enqueues an update operation, or updates a pending offline creation in-place.
+   */
+  enqueueUpdate(
+    targetId: string,
+    payload: CreateTransactionPayload,
+    original: Transaction
+  ): Transaction {
+    // 1. Se for uma criação pendente offline que ainda não foi pro servidor, atualiza o payload in-place
+    const pendingCreate = this.queue.find(
+      (item) => item.type === 'create' && item.localId === targetId
+    );
+
+    if (pendingCreate && pendingCreate.type === 'create') {
+      pendingCreate.payload = payload;
+      this.saveQueueToStorage();
+      this.emitState();
+      return {
+        id: targetId,
+        ...payload,
+        pendingSync: true,
+      };
+    }
+
+    // 2. Se já houver um update em fila para este ID, atualiza o payload
+    const existingUpdate = this.queue.find(
+      (item) => item.type === 'update' && item.targetId === targetId
+    );
+    if (existingUpdate && existingUpdate.type === 'update') {
+      existingUpdate.payload = payload;
+      this.saveQueueToStorage();
+      this.emitState();
+      return {
+        id: targetId,
+        ...payload,
+        notionId: original.notionId,
+        pendingSync: true,
+      };
+    }
+
+    // 3. Caso contrário, enfileira nova ação de update
+    const queueItem: SyncQueueItem = {
+      queueId: `q-upd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type: 'update',
+      targetId,
+      payload,
+      original,
+      notionId: original.notionId,
+      createdAt: new Date().toISOString(),
+      attempts: 0,
+    };
+
+    this.queue = [...this.queue, queueItem];
+    this.lastError = null;
+    this.saveQueueToStorage();
+    this.emitState();
+    void this.registerBackgroundSync();
+
+    return {
+      id: targetId,
+      ...payload,
+      notionId: original.notionId,
+      pendingSync: true,
+    };
+  }
+
+  /**
    * Enqueues a delete operation, or cancels a pending offline creation cleanly.
    */
   enqueueDelete(targetId: string): { removedLocallyOnly: boolean } {
@@ -360,8 +426,10 @@ class OfflineSyncManager {
       try {
         if (item.type === 'create') {
           await createTransaction(item.payload, 'sheets');
+        } else if (item.type === 'update') {
+          await updateTransaction(item.targetId, item.payload, item.original, 'sheets');
         } else {
-          await deleteTransaction(item.targetId, 'sheets');
+          await deleteTransaction(item.targetId, item.notionId, 'sheets');
         }
         syncedCount++;
       } catch (err) {

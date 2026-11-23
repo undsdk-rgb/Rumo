@@ -6,7 +6,8 @@ import { BottomNav } from './components/BottomNav';
 import { CategoryChart } from './components/CategoryChart';
 import { Header, type SheetConnectionState } from './components/Header';
 import { LiquidGlassOptics } from './components/LiquidGlassOptics';
-import { NewExpenseModal } from './components/NewExpenseModal';
+import { ExpenseModal } from './components/ExpenseModal';
+import { LockScreen } from './components/LockScreen';
 import { SettingsView } from './components/SettingsView';
 import { SummaryCards } from './components/SummaryCards';
 import { Toast, type ToastMessage } from './components/Toast';
@@ -19,15 +20,27 @@ import { usePushNotifications } from './hooks/usePushNotifications';
 import { useSyncManager } from './hooks/useSyncManager';
 import {
   createTransaction,
+  updateTransaction,
   deleteTransaction,
   fetchBudgetRecommendation,
+  fetchRemoteSettings,
+  saveRemoteSettings,
   fetchTransactions,
   isNetworkError,
   loadSettings,
   saveSettings,
 } from './services/api';
+import {
+  DEFAULT_LOCK_CONFIG,
+  getIsSessionUnlocked,
+  loadLockConfig,
+  saveLockConfig,
+  setSessionUnlocked,
+  setupAutoLockWatcher,
+} from './services/security';
 import { syncManager } from './services/syncManager';
 import type {
+  AppLockConfig,
   AppSettings,
   BackendSyncStatus,
   BudgetRecommendation,
@@ -135,6 +148,9 @@ export default function App() {
   const [chartMode, setChartMode] = useState<ChartViewMode>('donut');
 
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [lockConfig, setLockConfig] = useState<AppLockConfig>(DEFAULT_LOCK_CONFIG);
+  const [isLocked, setIsLocked] = useState<boolean>(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const [budgetRecommendation, setBudgetRecommendation] =
@@ -191,6 +207,54 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-glass-clarity', settings.glassClarity);
   }, [settings.glassClarity]);
+
+  // Carrega configuração de bloqueio de segurança
+  useEffect(() => {
+    void (async () => {
+      const cfg = await loadLockConfig();
+      setLockConfig(cfg);
+      if (cfg.enabled && !getIsSessionUnlocked()) {
+        setIsLocked(true);
+      }
+    })();
+  }, []);
+
+  // Monitora inatividade e minimização do app para bloqueio automático
+  useEffect(() => {
+    const cleanup = setupAutoLockWatcher(lockConfig, () => {
+      setIsLocked(true);
+    });
+    return cleanup;
+  }, [lockConfig]);
+
+  // Sincroniza configurações remotas (aba Config da Planilha Google) na inicialização
+  useEffect(() => {
+    void (async () => {
+      try {
+        const remote = await fetchRemoteSettings();
+        if (remote && Object.keys(remote).length > 0) {
+          setSettings((prev) => {
+            const merged: AppSettings = {
+              ...prev,
+              ...(typeof remote.monthlyBudget === 'number' && remote.monthlyBudget >= 0
+                ? { monthlyBudget: remote.monthlyBudget }
+                : {}),
+              ...(typeof remote.autoSyncSeconds === 'number'
+                ? { autoSyncSeconds: remote.autoSyncSeconds }
+                : {}),
+              ...(remote.theme ? { theme: remote.theme } : {}),
+              ...(remote.glassClarity ? { glassClarity: remote.glassClarity } : {}),
+              ...(typeof remote.privacyMode === 'boolean' ? { privacyMode: remote.privacyMode } : {}),
+            };
+            saveSettings(merged);
+            return merged;
+          });
+        }
+      } catch {
+        // Ignora erro de rede não-crítico
+      }
+    })();
+  }, []);
 
   // Fetch month data with Stale-While-Revalidate hydration + offline queue overlay
   const loadMonthData = useCallback(
@@ -514,10 +578,26 @@ export default function App() {
   const handleSaveSettings = (next: AppSettings) => {
     setSettings(next);
     saveSettings(next);
+    void saveRemoteSettings(next);
     showToast('success', 'Preferências salvas.');
   };
 
+  const handleSaveLockConfig = async (nextConfig: AppLockConfig) => {
+    setLockConfig(nextConfig);
+    await saveLockConfig(nextConfig);
+    if (!nextConfig.enabled) {
+      setIsLocked(false);
+      setSessionUnlocked(true);
+    }
+  };
+
+  const handleLockNow = () => {
+    setSessionUnlocked(false);
+    setIsLocked(true);
+  };
+
   const handleDeleteTransaction = async (id: string) => {
+    const targetTx = transactions.find((item) => item.id === id);
     const prevList = transactions;
     setTransactions((prev) => prev.filter((item) => item.id !== id));
 
@@ -536,7 +616,7 @@ export default function App() {
     }
 
     try {
-      await deleteTransaction(id, backendStatus.mode);
+      await deleteTransaction(id, targetTx?.notionId, backendStatus.mode);
       if (backendStatus.mode === 'sheets') {
         const nextList = prevList.filter((item) => item.id !== id);
         syncManager.saveMonthSnapshot(selectedMonth, nextList, {
@@ -645,7 +725,66 @@ export default function App() {
     });
   }, [monthTransactions, searchQuery, selectedCategory]);
 
-  const handleCreateTransaction = async (payload: CreateTransactionPayload) => {
+  const handleSaveTransaction = async (
+    payload: CreateTransactionPayload,
+    editId?: string
+  ) => {
+    // 1. Modo Edição
+    if (editId) {
+      const orig = transactions.find((t) => t.id === editId);
+      if (!orig) return;
+
+      let updated: Transaction;
+      let queuedOffline = false;
+
+      if (!pwa.isOnline && backendStatus.mode === 'sheets') {
+        updated = syncManager.enqueueUpdate(editId, payload, orig);
+        queuedOffline = true;
+      } else {
+        try {
+          updated = await updateTransaction(editId, payload, orig, backendStatus.mode);
+        } catch (err) {
+          if (backendStatus.mode === 'sheets' && isNetworkError(err)) {
+            updated = syncManager.enqueueUpdate(editId, payload, orig);
+            queuedOffline = true;
+          } else {
+            throw err;
+          }
+        }
+      }
+
+      const updatedMonth = updated.data.slice(0, 7);
+      const nextList = transactions
+        .map((item) => (item.id === editId ? updated : item))
+        .sort((a, b) => b.data.localeCompare(a.data));
+
+      setTransactions(nextList);
+
+      if (!queuedOffline && backendStatus.mode === 'sheets') {
+        syncManager.saveMonthSnapshot(selectedMonth, nextList, {
+          mode: backendStatus.mode,
+          spreadsheetName: backendStatus.spreadsheetName,
+        });
+        syncManager.requestSwRevalidation(selectedMonth);
+      }
+
+      if (updatedMonth !== selectedMonth && /^\d{4}-\d{2}$/.test(updatedMonth)) {
+        showToast(
+          'info',
+          `Lançamento movido para ${formatMonthYear(updatedMonth)}.`
+        );
+      } else {
+        showToast(
+          queuedOffline ? 'info' : 'success',
+          queuedOffline
+            ? 'Edição salva offline — será sincronizada ao reconectar.'
+            : 'Lançamento atualizado com sucesso.'
+        );
+      }
+      return;
+    }
+
+    // 2. Modo Criação
     const previousTotal = totalSpent;
     let created: Transaction;
     let queuedOffline = false;
@@ -1102,6 +1241,7 @@ export default function App() {
                   error={error}
                   canDelete={true}
                   privacyMode={settings.privacyMode}
+                  onEditTransaction={(tx) => setEditingTransaction(tx)}
                   onDeleteTransaction={(id) => void handleDeleteTransaction(id)}
                   onRetry={() => void loadMonthData()}
                   onOpenSettings={() => handleSelectTab('configuracao')}
@@ -1122,6 +1262,9 @@ export default function App() {
               >
                 <SettingsView
                   settings={settings}
+                  lockConfig={lockConfig}
+                  onSaveLockConfig={handleSaveLockConfig}
+                  onLockNow={handleLockNow}
                   backendStatus={backendStatus}
                   syncing={syncing}
                   isOnline={pwa.isOnline}
@@ -1167,14 +1310,27 @@ export default function App() {
           onOpenNewOutflow={handleOpenNewModal}
         />
 
-        {/* Manual Outflow Modal / Bottom Sheet */}
-        <NewExpenseModal
-          open={isNewModalOpen}
+        {/* Manual Outflow & Edit Modal / Bottom Sheet */}
+        <ExpenseModal
+          open={isNewModalOpen || Boolean(editingTransaction)}
+          mode={editingTransaction ? 'edit' : 'create'}
+          initialTransaction={editingTransaction}
           isRealMode={backendStatus.mode === 'sheets'}
           isOnline={pwa.isOnline}
-          onClose={() => setIsNewModalOpen(false)}
-          onSubmit={handleCreateTransaction}
+          onClose={() => {
+            setIsNewModalOpen(false);
+            setEditingTransaction(null);
+          }}
+          onSubmit={handleSaveTransaction}
         />
+
+        {/* Biometric & PIN Security Lock Overlay */}
+        {isLocked && lockConfig.enabled && (
+          <LockScreen
+            lockConfig={lockConfig}
+            onUnlock={() => setIsLocked(false)}
+          />
+        )}
 
         <Toast toast={toast} onDismiss={() => setToast(null)} />
       </div>

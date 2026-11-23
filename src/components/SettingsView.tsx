@@ -10,20 +10,27 @@ import {
   Droplets,
   Eye,
   EyeOff,
+  Fingerprint,
   Key,
+  KeyRound,
   Layers,
   Link as LinkIcon,
+  Lock,
   Monitor,
   Moon,
   RefreshCw,
+  ScanFace,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Sun,
+  X,
 } from 'lucide-react';
 import type { PushPermissionState } from '../hooks/usePushNotifications';
 import type {
+  AppLockConfig,
   AppSettings,
+  AutoLockTimeout,
   BackendSyncStatus,
   BudgetRecommendation,
   GlassClarityMode,
@@ -34,11 +41,22 @@ import { parseMoneyInput } from '../utils/format';
 import { AnimatedMoney } from './AnimatedMoney';
 import { NotificationsPanel } from './NotificationsPanel';
 import { getAppsScriptConfig, setCustomAppsScriptConfig } from '../services/api';
+import {
+  generateSalt,
+  getBiometricLabel,
+  hashPin,
+  isAppleDevice,
+  registerBiometrics,
+  verifyPin,
+} from '../services/security';
 
 const EASE_IOS: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 interface SettingsViewProps {
   settings: AppSettings;
+  lockConfig: AppLockConfig;
+  onSaveLockConfig: (config: AppLockConfig) => Promise<void>;
+  onLockNow: () => void;
   backendStatus: BackendSyncStatus;
   syncing: boolean;
   isOnline: boolean;
@@ -73,7 +91,7 @@ interface SettingsViewProps {
   onNotifyFeedback: (type: 'success' | 'error' | 'info', text: string) => void;
 }
 
-type SettingsSubTab = 'geral' | 'push';
+type SettingsSubTab = 'geral' | 'seguranca' | 'push';
 
 const SYNC_INTERVAL_OPTIONS = [
   { value: 15, label: '15s' },
@@ -126,6 +144,9 @@ export function SettingsView({
   onSubscribeWebPush,
   onUnsubscribeWebPush,
   onNotifyFeedback,
+  lockConfig,
+  onSaveLockConfig,
+  onLockNow,
 }: SettingsViewProps) {
   const [subTab, setSubTab] = useState<SettingsSubTab>('geral');
   const [budgetInput, setBudgetInput] = useState(
@@ -134,6 +155,145 @@ export function SettingsView({
       : ''
   );
   const [error, setError] = useState<string | null>(null);
+
+  // Security & Lock Modal State
+  const [showPinModal, setShowPinModal] = useState(false);
+  const [pinModalMode, setPinModalMode] = useState<'create' | 'change' | 'disable'>('create');
+  const [currentPinInput, setCurrentPinInput] = useState('');
+  const [newPinInput, setNewPinInput] = useState('');
+  const [confirmPinInput, setConfirmPinInput] = useState('');
+  const [pinModalError, setPinModalError] = useState<string | null>(null);
+  const [pinModalBusy, setPinModalBusy] = useState(false);
+
+  const biometricLabel = getBiometricLabel();
+  const isApple = isAppleDevice();
+  const BiometricIcon = isApple ? ScanFace : Fingerprint;
+
+  const handleToggleLock = () => {
+    if (lockConfig.enabled) {
+      // Para desativar, se tiver PIN configurado, solicita confirmação
+      if (lockConfig.pinHash) {
+        setPinModalMode('disable');
+        setCurrentPinInput('');
+        setPinModalError(null);
+        setShowPinModal(true);
+      } else {
+        void onSaveLockConfig({
+          ...lockConfig,
+          enabled: false,
+        });
+        onNotifyFeedback('info', 'Bloqueio desativado.');
+      }
+    } else {
+      // Se não tiver PIN cadastrado, abre modal para criar PIN
+      if (!lockConfig.pinHash) {
+        setPinModalMode('create');
+        setNewPinInput('');
+        setConfirmPinInput('');
+        setPinModalError(null);
+        setShowPinModal(true);
+      } else {
+        void onSaveLockConfig({
+          ...lockConfig,
+          enabled: true,
+        });
+        onNotifyFeedback('success', 'Bloqueio de segurança ativado.');
+      }
+    }
+  };
+
+  const handleToggleBiometrics = async () => {
+    if (!lockConfig.biometricEnabled) {
+      try {
+        const credentialId = await registerBiometrics();
+        await onSaveLockConfig({
+          ...lockConfig,
+          biometricEnabled: true,
+          biometricCredentialId: credentialId,
+        });
+        onNotifyFeedback('success', `${biometricLabel} ativado com sucesso!`);
+      } catch (err) {
+        onNotifyFeedback('error', err instanceof Error ? err.message : 'Falha ao ativar biometria.');
+      }
+    } else {
+      await onSaveLockConfig({
+        ...lockConfig,
+        biometricEnabled: false,
+      });
+      onNotifyFeedback('info', `${biometricLabel} desativado.`);
+    }
+  };
+
+  const handleChangeAutoLock = async (timeout: AutoLockTimeout) => {
+    await onSaveLockConfig({
+      ...lockConfig,
+      autoLockMinutes: timeout,
+    });
+    onNotifyFeedback('success', 'Tempo de bloqueio atualizado.');
+  };
+
+  const handlePinModalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinModalError(null);
+    setPinModalBusy(true);
+
+    try {
+      if (pinModalMode === 'disable') {
+        if (!lockConfig.pinSalt || !lockConfig.pinHash) {
+          await onSaveLockConfig({ ...lockConfig, enabled: false });
+          setShowPinModal(false);
+          return;
+        }
+        const valid = await verifyPin(currentPinInput, lockConfig.pinSalt, lockConfig.pinHash);
+        if (!valid) {
+          setPinModalError('PIN atual incorreto.');
+          return;
+        }
+        await onSaveLockConfig({ ...lockConfig, enabled: false });
+        onNotifyFeedback('info', 'Bloqueio desativado.');
+        setShowPinModal(false);
+        return;
+      }
+
+      if (pinModalMode === 'change') {
+        if (lockConfig.pinSalt && lockConfig.pinHash) {
+          const valid = await verifyPin(currentPinInput, lockConfig.pinSalt, lockConfig.pinHash);
+          if (!valid) {
+            setPinModalError('PIN atual incorreto.');
+            return;
+          }
+        }
+      }
+
+      // Validação de novo PIN (4 dígitos)
+      if (!/^\d{4}$/.test(newPinInput)) {
+        setPinModalError('O PIN deve conter exatamente 4 números.');
+        return;
+      }
+
+      if (newPinInput !== confirmPinInput) {
+        setPinModalError('A confirmação do PIN não confere.');
+        return;
+      }
+
+      const salt = generateSalt();
+      const hash = await hashPin(newPinInput, salt);
+
+      await onSaveLockConfig({
+        ...lockConfig,
+        enabled: true,
+        pinSalt: salt,
+        pinHash: hash,
+      });
+
+      onNotifyFeedback('success', 'PIN configurado com sucesso!');
+      setShowPinModal(false);
+    } catch {
+      setPinModalError('Erro ao salvar PIN.');
+    } finally {
+      setPinModalBusy(false);
+    }
+  };
 
   useEffect(() => {
     setBudgetInput(
@@ -243,15 +403,16 @@ export function SettingsView({
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
-      {/* Sub-navigation switcher: Geral | Push e iOS */}
+      {/* Sub-navigation switcher: Geral | Segurança | Push e iOS */}
       <div
-        className="glass-chrome grid grid-cols-2 gap-1 rounded-full p-1.5"
+        className="glass-chrome grid grid-cols-3 gap-1 rounded-full p-1.5"
         role="tablist"
         aria-label="Seções de configuração"
       >
         {(
           [
             { id: 'geral', label: 'Geral', icon: SlidersHorizontal },
+            { id: 'seguranca', label: 'Segurança', icon: ShieldCheck },
             { id: 'push', label: 'Push e iOS', icon: Bell },
           ] as const
         ).map((tab) => {
@@ -285,7 +446,162 @@ export function SettingsView({
       </div>
 
       <AnimatePresence mode="wait" initial={false}>
-        {subTab === 'push' ? (
+        {subTab === 'seguranca' ? (
+          <motion.div
+            key="subtab-seguranca"
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.2, ease: EASE_IOS }}
+            className="space-y-4"
+          >
+            {/* Main Security Card */}
+            <section className="glass-surface space-y-4 overflow-hidden rounded-[28px] p-4 sm:p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 text-emerald-500" />
+                    <span>Bloqueio de Segurança e Privacidade</span>
+                  </h2>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Protege o acesso aos seus saldos e despesas financeiras com Face ID, Biometria e PIN de 4 dígitos.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleLock}
+                  role="switch"
+                  aria-checked={lockConfig.enabled}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                    lockConfig.enabled ? 'bg-emerald-600' : 'bg-slate-300 dark:bg-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                      lockConfig.enabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {lockConfig.enabled && (
+                <div className="space-y-4 pt-2 border-t border-slate-900/[0.06] dark:border-white/[0.08]">
+                  {/* PIN Section */}
+                  <div className="flex items-center justify-between py-1">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">
+                        PIN de 4 dígitos
+                      </span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                        {lockConfig.pinHash ? 'PIN cadastrado e ativo' : 'Nenhum PIN configurado'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPinModalMode(lockConfig.pinHash ? 'change' : 'create');
+                        setCurrentPinInput('');
+                        setNewPinInput('');
+                        setConfirmPinInput('');
+                        setPinModalError(null);
+                        setShowPinModal(true);
+                      }}
+                      className="glass-control inline-flex min-h-[36px] items-center gap-1.5 rounded-full px-4 text-xs font-semibold text-slate-700 transition-colors dark:text-slate-200"
+                    >
+                      <KeyRound className="h-3.5 w-3.5" />
+                      <span>{lockConfig.pinHash ? 'Alterar PIN' : 'Cadastrar PIN'}</span>
+                    </button>
+                  </div>
+
+                  {/* Biometric Toggle Section */}
+                  <div className="flex items-center justify-between py-1">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400">
+                        <BiometricIcon className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">
+                          {biometricLabel}
+                        </span>
+                        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                          {lockConfig.biometricEnabled
+                            ? `Desbloqueio rápido por ${biometricLabel} ativo`
+                            : `Desbloquear com sensor do aparelho`}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleBiometrics()}
+                      role="switch"
+                      aria-checked={lockConfig.biometricEnabled}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 ${
+                        lockConfig.biometricEnabled ? 'bg-emerald-600' : 'bg-slate-300 dark:bg-slate-700'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                          lockConfig.biometricEnabled ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {/* Auto-Lock Timeout Options */}
+                  <div className="pt-2">
+                    <span className="text-xs font-medium text-slate-700 dark:text-slate-300 block mb-2">
+                      Bloquear automaticamente após inatividade
+                    </span>
+                    <div className="glass-chrome grid grid-cols-3 gap-1 rounded-full p-1.5" role="radiogroup">
+                      {[
+                        { value: 0 as AutoLockTimeout, label: 'Imediato' },
+                        { value: 1 as AutoLockTimeout, label: '1 minuto' },
+                        { value: 5 as AutoLockTimeout, label: '5 minutos' },
+                      ].map((item) => {
+                        const active = lockConfig.autoLockMinutes === item.value;
+                        return (
+                          <button
+                            key={item.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => void handleChangeAutoLock(item.value)}
+                            className={`relative flex min-h-[36px] items-center justify-center gap-1.5 rounded-full px-2 text-xs font-semibold transition-colors ${
+                              active
+                                ? 'text-slate-900 dark:text-white'
+                                : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            {active && (
+                              <motion.span
+                                layoutId="settings-autolock-pill"
+                                transition={{ duration: 0.24, ease: EASE_IOS }}
+                                className="glass-pill-active absolute inset-0 rounded-full"
+                              />
+                            )}
+                            <span className="relative z-10">{item.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Lock Now Button */}
+                  <div className="pt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={onLockNow}
+                      className="glass-control inline-flex min-h-[42px] items-center gap-2 rounded-full px-5 text-xs font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors"
+                    >
+                      <Lock className="h-4 w-4 text-emerald-500" />
+                      <span>Bloquear aplicativo agora</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+          </motion.div>
+        ) : subTab === 'push' ? (
           <motion.div
             key="subtab-push"
             initial={{ opacity: 0, y: 6 }}
@@ -847,6 +1163,132 @@ export function SettingsView({
               </div>
             </section>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* PIN Setup / Change Modal */}
+      <AnimatePresence>
+        {showPinModal && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="glass-surface w-full max-w-sm rounded-3xl p-6 border border-white/15 text-left text-slate-900 dark:text-white shadow-2xl"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="h-5 w-5 text-emerald-500" />
+                  <h3 className="text-base font-bold">
+                    {pinModalMode === 'disable'
+                      ? 'Desativar Bloqueio'
+                      : pinModalMode === 'change'
+                        ? 'Alterar PIN de Segurança'
+                        : 'Definir PIN de Segurança'}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPinModal(false)}
+                  className="rounded-full p-1 text-slate-400 hover:text-slate-600 dark:hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
+                {pinModalMode === 'disable'
+                  ? 'Digite seu PIN atual de 4 dígitos para confirmar a desativação.'
+                  : 'O PIN numérico de 4 dígitos serve para desbloquear o app e como alternativa à biometria.'}
+              </p>
+
+              <form onSubmit={handlePinModalSubmit} className="mt-4 space-y-3">
+                {(pinModalMode === 'disable' || (pinModalMode === 'change' && lockConfig.pinHash)) && (
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                      PIN Atual (4 dígitos)
+                    </label>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={4}
+                      required
+                      value={currentPinInput}
+                      onChange={(e) => setCurrentPinInput(e.target.value.replace(/\D/g, ''))}
+                      placeholder="••••"
+                      className="mt-1 flex w-full rounded-xl bg-white/50 dark:bg-white/10 px-3.5 py-2 font-mono text-center text-lg tracking-widest text-slate-900 dark:text-white border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      autoFocus
+                    />
+                  </div>
+                )}
+
+                {pinModalMode !== 'disable' && (
+                  <>
+                    <div>
+                      <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                        Novo PIN (4 dígitos)
+                      </label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={4}
+                        required
+                        value={newPinInput}
+                        onChange={(e) => setNewPinInput(e.target.value.replace(/\D/g, ''))}
+                        placeholder="••••"
+                        className="mt-1 flex w-full rounded-xl bg-white/50 dark:bg-white/10 px-3.5 py-2 font-mono text-center text-lg tracking-widest text-slate-900 dark:text-white border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        autoFocus={pinModalMode === 'create'}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                        Confirmar Novo PIN
+                      </label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={4}
+                        required
+                        value={confirmPinInput}
+                        onChange={(e) => setConfirmPinInput(e.target.value.replace(/\D/g, ''))}
+                        placeholder="••••"
+                        className="mt-1 flex w-full rounded-xl bg-white/50 dark:bg-white/10 px-3.5 py-2 font-mono text-center text-lg tracking-widest text-slate-900 dark:text-white border border-slate-200 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                  </>
+                )}
+
+                {pinModalError && (
+                  <p className="text-xs text-red-600 dark:text-red-400 font-medium">
+                    {pinModalError}
+                  </p>
+                )}
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowPinModal(false)}
+                    className="flex-1 min-h-[42px] rounded-xl border border-slate-200 dark:border-white/15 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={
+                      pinModalBusy ||
+                      (pinModalMode === 'disable'
+                        ? currentPinInput.length !== 4
+                        : newPinInput.length !== 4 || confirmPinInput.length !== 4)
+                    }
+                    className="flex-1 min-h-[42px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition-colors disabled:opacity-40"
+                  >
+                    {pinModalBusy ? 'Salvando...' : pinModalMode === 'disable' ? 'Desativar' : 'Salvar PIN'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>

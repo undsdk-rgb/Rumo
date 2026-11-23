@@ -161,6 +161,7 @@ export function parseNotionPageToTransaction(page: any): Transaction {
     categoria,
     metodo,
     data,
+    notionId: page.id,
   };
 }
 
@@ -339,3 +340,114 @@ export async function deleteNotionTransaction(pageId: string): Promise<boolean> 
 
   return true;
 }
+
+/**
+ * Updates an existing transaction page in Notion
+ */
+export async function updateNotionTransaction(
+  pageId: string,
+  payload: {
+    estabelecimento: string;
+    valor: number;
+    categoria: Category;
+    metodo: string;
+    data: string;
+  }
+): Promise<Transaction> {
+  const { apiKey, configured } = getNotionConfig();
+  if (!configured) {
+    throw new Error('Notion não está configurado.');
+  }
+
+  const dateOnly = payload.data ? payload.data.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  const notionCategory = mapRumoToNotionCategory(payload.categoria);
+
+  const body = {
+    properties: {
+      Nome: {
+        title: [{ text: { content: payload.estabelecimento } }],
+      },
+      Valor: {
+        number: Number(payload.valor),
+      },
+      Tipo: {
+        select: { name: 'Saída' },
+      },
+      'Categoria ': {
+        select: { name: notionCategory },
+      },
+      'Data programada ': {
+        date: { start: dateOnly },
+      },
+      'Data Realizada': {
+        date: { start: dateOnly },
+      },
+      Realizado: {
+        checkbox: true,
+      },
+      Observação: {
+        rich_text: [{ text: { content: `Método: ${payload.metodo} (Lançado via Rumo)` } }],
+      },
+    },
+  };
+
+  const res = await fetch(`${NOTION_API_BASE}/pages/${pageId}`, {
+    method: 'PATCH',
+    headers: getHeaders(apiKey),
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Erro ao atualizar lançamento no Notion (HTTP ${res.status}): ${errText}`);
+  }
+
+  const updatedPage = await res.json();
+  return parseNotionPageToTransaction(updatedPage);
+}
+
+/**
+ * Searches for a Notion page ID by merchant name and value match
+ */
+export async function findNotionPageByMatch(match: {
+  estabelecimento: string;
+  valor: number;
+  data?: string;
+}): Promise<string | null> {
+  const { apiKey, databaseId, configured } = getNotionConfig();
+  if (!configured) return null;
+
+  try {
+    const res = await fetch(`${NOTION_API_BASE}/databases/${databaseId}/query`, {
+      method: 'POST',
+      headers: getHeaders(apiKey),
+      body: JSON.stringify({
+        page_size: 10,
+        filter: {
+          property: 'Nome',
+          title: { equals: match.estabelecimento },
+        },
+      }),
+    });
+
+    if (res.ok) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = (await res.json()) as any;
+      const results = Array.isArray(data.results) ? data.results : [];
+      for (const page of results) {
+        if (page.archived) continue;
+        const val = page.properties?.Valor?.number;
+        if (typeof val === 'number' && Math.abs(val - Number(match.valor)) < 0.05) {
+          return page.id;
+        }
+      }
+      if (results.length > 0 && !results[0].archived) {
+        return results[0].id;
+      }
+    }
+  } catch (e) {
+    console.warn('Aviso: falha ao buscar correspondência no Notion:', e);
+  }
+  return null;
+}
+

@@ -35,6 +35,7 @@ export interface Transaction {
   metodo: string;
   data: string; // ISO local format: YYYY-MM-DDTHH:mm
   pendingSync?: boolean;
+  notionId?: string;
 }
 
 export interface CreateTransactionPayload {
@@ -57,8 +58,20 @@ export type SyncQueueItem =
     }
   | {
       queueId: string;
+      type: 'update';
+      targetId: string;
+      payload: CreateTransactionPayload;
+      original: Transaction;
+      notionId?: string;
+      createdAt: string;
+      attempts: number;
+      lastError?: string;
+    }
+  | {
+      queueId: string;
       type: 'delete';
       targetId: string;
+      notionId?: string;
       createdAt: string;
       attempts: number;
       lastError?: string;
@@ -126,3 +139,15 @@ export interface CategorySummary {
   count: number;
   percentage: number;
 }
+
+export type AutoLockTimeout = 0 | 1 | 5; // minutos (0 = imediato)
+
+export interface AppLockConfig {
+  enabled: boolean;
+  biometricEnabled: boolean;
+  biometricCredentialId?: string;
+  pinSalt?: string;
+  pinHash?: string;
+  autoLockMinutes: AutoLockTimeout;
+}
+

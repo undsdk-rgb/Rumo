@@ -397,13 +397,17 @@ function parseRemoteTransaction(raw: Record<string, unknown>, idx: number): Tran
       ? rawValor
       : Number(String(rawValor ?? '0').replace(',', '.'));
 
+  const rawNotionId = raw.notionId ? String(raw.notionId).trim() : undefined;
+  const rawId = String(raw.id || `sheet-${idx}-${Date.now()}`);
+
   return {
-    id: String(raw.id || `sheet-${idx}-${Date.now()}`),
+    id: rawId,
     estabelecimento: String(raw.estabelecimento || 'Sem descrição').trim(),
     valor: Number.isFinite(numericValor) ? Math.abs(numericValor) : 0,
     categoria: normalizeCategory(raw.categoria),
     metodo: String(raw.metodo || 'Apple Pay').trim(),
     data: normalizeIsoDate(raw.data),
+    notionId: rawNotionId || (rawId.length > 20 && rawId.includes('-') && !rawId.startsWith('sheet-') ? rawId : undefined),
   };
 }
 
@@ -614,8 +618,96 @@ export async function createTransaction(
   );
 }
 
+export async function updateTransaction(
+  id: string,
+  payload: CreateTransactionPayload,
+  original?: Transaction,
+  mode?: BackendMode
+): Promise<Transaction> {
+  if (mode === 'demo') {
+    const updated: Transaction = {
+      id,
+      ...payload,
+      notionId: original?.notionId,
+    };
+    const next = getDemoStore().map((item) => (item.id === id ? updated : item));
+    saveDemoStore(next);
+    return updated;
+  }
+
+  // 1. Prioridade: Proxy Express local (/api/transactions/:id)
+  try {
+    const response = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...payload,
+        notionId: original?.notionId,
+        original,
+      }),
+    });
+    if (response.ok) {
+      const json = await response.json();
+      if (json?.data) return parseRemoteTransaction(json.data, 0);
+    }
+  } catch {
+    // Continua para o fallback direto
+  }
+
+  // 2. Fallback: Chamada direta ao Google Apps Script
+  const config = getAppsScriptConfig();
+  if (config.isConfigured) {
+    let response: Response;
+    try {
+      response = await fetch(config.scriptUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        body: JSON.stringify({
+          token: config.token,
+          action: 'update',
+          id,
+          ...payload,
+          notionId: original?.notionId,
+          original,
+        }),
+        redirect: 'follow',
+      });
+    } catch {
+      throw new NetworkOfflineError('Sem conexão ao enviar edição para o Apps Script.');
+    }
+
+    const json = (await response.json().catch(() => null)) as {
+      status?: 'ok' | 'error';
+      message?: string;
+      data?: Record<string, unknown>;
+      error?: string;
+    } | null;
+
+    if (!response.ok || json?.status === 'error' || json?.error) {
+      throw new Error(
+        json?.message || json?.error || `Erro HTTP ${response.status} ao gravar edição na planilha.`
+      );
+    }
+
+    if (json?.data) {
+      return parseRemoteTransaction(json.data, 0);
+    }
+
+    return {
+      id,
+      ...payload,
+      notionId: original?.notionId,
+    };
+  }
+
+  throw new Error('Configure o backend para editar lançamentos.');
+}
+
 export async function deleteTransaction(
   id: string,
+  notionId?: string,
   mode?: BackendMode
 ): Promise<void> {
   if (mode === 'demo') {
@@ -626,7 +718,8 @@ export async function deleteTransaction(
 
   // 1. Prioridade: Proxy Express local (arquiva no Notion E remove da Planilha Google)
   try {
-    const response = await fetch(`/api/transactions/${encodeURIComponent(id)}`, {
+    const url = `/api/transactions/${encodeURIComponent(id)}${notionId ? `?notionId=${encodeURIComponent(notionId)}` : ''}`;
+    const response = await fetch(url, {
       method: 'DELETE',
     });
     if (response.ok) return;
@@ -648,6 +741,7 @@ export async function deleteTransaction(
           token: config.token,
           action: 'delete',
           id,
+          notionId,
         }),
         redirect: 'follow',
       });
@@ -670,6 +764,70 @@ export async function deleteTransaction(
   }
 
   throw new Error('Configure o backend antes de excluir registros.');
+}
+
+export async function fetchRemoteSettings(): Promise<Partial<AppSettings> | null> {
+  // 1. Tenta Express local
+  try {
+    const res = await fetch('/api/settings');
+    if (res.ok) {
+      const json = await res.json();
+      if (json?.settings) return json.settings;
+    }
+  } catch {
+    // fallback
+  }
+
+  // 2. Fallback Apps Script direto
+  const config = getAppsScriptConfig();
+  if (config.isConfigured) {
+    try {
+      const url = new URL(config.scriptUrl);
+      url.searchParams.set('token', config.token);
+      url.searchParams.set('action', 'get_settings');
+      const res = await fetch(url.toString(), { redirect: 'follow' });
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.settings) return json.settings;
+      }
+    } catch {
+      // Ignora erro de rede
+    }
+  }
+  return null;
+}
+
+export async function saveRemoteSettings(settings: AppSettings): Promise<void> {
+  // 1. Tenta Express local
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    if (res.ok) return;
+  } catch {
+    // fallback
+  }
+
+  // 2. Fallback Apps Script direto
+  const config = getAppsScriptConfig();
+  if (config.isConfigured) {
+    try {
+      await fetch(config.scriptUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          token: config.token,
+          action: 'save_settings',
+          settings,
+        }),
+        redirect: 'follow',
+      });
+    } catch {
+      // Ignora erro de rede não-bloqueante
+    }
+  }
 }
 
 function roundSuggestedBudget(value: number): number {
