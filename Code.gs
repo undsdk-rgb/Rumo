@@ -795,6 +795,69 @@ function testarConexaoNotion() {
 }
 
 /**
+ * Percorre todas as linhas da aba Despesas que ainda não possuem notion_id (coluna G)
+ * e cria as respectivas páginas no Notion, preenchendo o notion_id na planilha.
+ */
+function sincronizarHistoricoParaNotion() {
+  const ss = getSpreadsheet_();
+  const sheet = ss.getSheetByName(EXPENSES_SHEET_NAME);
+  if (!sheet) {
+    Logger.log('Aba Despesas não encontrada.');
+    return;
+  }
+
+  const creds = getScriptCredentials_();
+  if (!creds.notionToken || !creds.notionDbId) {
+    const msg = 'Erro: NOTION_TOKEN e NOTION_DATABASE_ID devem estar configurados nas Propriedades do Script.';
+    Logger.log(msg);
+    try { SpreadsheetApp.getUi().alert(msg); } catch (e) {}
+    return;
+  }
+
+  const rows = sheet.getDataRange().getValues();
+  let count = 0;
+  let skipped = 0;
+
+  for (let i = 1; i < rows.length; i++) {
+    const rawDate = rows[i][1];
+    const estab = rows[i][2];
+    const valor = rows[i][3];
+    const cat = rows[i][4];
+    const metodo = rows[i][5];
+    const notionId = rows[i][6];
+
+    if (!estab && !valor) continue;
+    if (notionId && String(notionId).trim()) {
+      skipped++;
+      continue; // Já possui ID do Notion
+    }
+
+    const item = {
+      estabelecimento: String(estab || 'Despesa').trim(),
+      valor: typeof valor === 'number' ? valor : parseMonetaryValue_(valor),
+      categoria: String(cat || 'Geral').trim(),
+      data: formatRowDate_(rawDate),
+      metodo: String(metodo || 'Apple Pay').trim(),
+    };
+
+    const newId = syncToNotion_(item);
+    if (newId) {
+      sheet.getRange(i + 1, 7).setValue(newId);
+      count++;
+      Utilities.sleep(350); // Respeita rate limit da API do Notion (3 req/seg)
+    }
+  }
+
+  const finalMsg = 'Sincronização com o Notion concluída!\n\n' +
+    'Despesas enviadas agora: ' + count + '\n' +
+    'Já sincronizadas anteriormente: ' + skipped;
+  Logger.log(finalMsg);
+  try {
+    SpreadsheetApp.getUi().alert(finalMsg);
+  } catch (e) {}
+}
+
+/**
  * Ponto de entrada GET (leitura de transações e configurações)
  * Endpoint: ?token=<TOKEN>&mes=YYYY-MM
  */
